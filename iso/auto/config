@@ -1,0 +1,35 @@
+#!/bin/sh
+set -e
+
+# Genera config/ para live-build. Este script queda versionado en vez de
+# `config/` directamente porque `lb config` regenera esa carpeta entera
+# (mezcla de boilerplate y overrides nuestros) — así el build es
+# reproducible sin tener que commitear los artefactos generados.
+#
+# Etapa 1 del roadmap (docs/ROADMAP.md): base mínima, sin instalador
+# (--debian-installer none), sin persistencia. Targetea la misma release
+# LTS de Ubuntu que se usa para desarrollar kal.
+#
+# La versión de live-build que empaqueta Ubuntu (3.0~a57) es de una línea
+# más vieja que la documentada en los tutoriales de Debian Live actuales:
+# --bootloader es singular (grub|syslinux|yaboot, sin lista EFI+BIOS), y
+# no hay --hostname/--username acá — el hostname se fija después con
+# config/includes.chroot/etc/hostname.
+#
+# LB_UNION_FILESYSTEM: el default de live-build es "aufs", pero aufs no
+# existe como módulo en el kernel de esta release (verificado: `modinfo
+# aufs` falla, `modinfo overlay` sí resuelve) — con el default la imagen
+# no bootearía. No hay flag de `lb config` para esto (viene de
+# functions/defaults.sh), se pasa por variable de entorno.
+export LB_UNION_FILESYSTEM="overlay"
+
+lb config noauto \
+    --mode ubuntu \
+    --distribution resolute \
+    --architectures amd64 \
+    --archive-areas "main restricted universe multiverse" \
+    --binary-images iso-hybrid \
+    --bootloader grub \
+    --debian-installer none \
+    --memtest none \
+    "${@}"

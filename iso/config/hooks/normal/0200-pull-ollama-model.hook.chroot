@@ -1,0 +1,47 @@
+#!/bin/bash
+# Baja (u horna desde cache) el modelo que la ISO va a incluir horneado
+# — ver la charla en docs/ROADMAP.md sobre por qué se hornea en el build
+# y no en el primer arranque: sin persistencia, "primer arranque" sería
+# en realidad "cada arranque".
+#
+# Idempotencia/cache: `ollama pull` ya es idempotente por sí solo — el
+# blob store de Ollama es content-addressed (sha256), así que `pull`
+# compara manifest+digests localmente antes de bajar cada capa. La parte
+# que nos toca a nosotros es solo asegurar que los blobs de una corrida
+# anterior estén ahí ANTES de llamarlo: eso lo hace auto/build (host),
+# sembrando /usr/share/ollama/.ollama/models desde iso/model-cache/ vía
+# hardlinks antes de arrancar `lb build` — así este `pull` no repite red
+# si el cache ya está caliente.
+set -euo pipefail
+
+# shellcheck disable=SC1091
+source /etc/likay-os/model.conf  # define MODEL_TAG
+
+# Puerto no-default: el chroot de live-build comparte el namespace de red
+# del host de build (no hay aislamiento de red acá), así que si la
+# máquina donde se corre `lb build` ya tiene un Ollama real corriendo en
+# 11434 (nada raro en una máquina donde también se desarrolla kal),
+# bindear el puerto default rompería uno de los dos, o peor, este pull
+# terminaría hablándole al Ollama equivocado.
+BUILD_OLLAMA_PORT=11434
+while ss -tln 2>/dev/null | grep -q ":${BUILD_OLLAMA_PORT} "; do
+    BUILD_OLLAMA_PORT=$((BUILD_OLLAMA_PORT + 1))
+done
+
+export OLLAMA_HOST="127.0.0.1:${BUILD_OLLAMA_PORT}"
+
+su ollama -s /bin/sh -c "OLLAMA_HOST=${OLLAMA_HOST} ollama serve" &
+OLLAMA_PID=$!
+trap 'kill "${OLLAMA_PID}" 2>/dev/null || true; wait "${OLLAMA_PID}" 2>/dev/null || true' EXIT
+
+echo "Esperando a que Ollama (build-time, ${OLLAMA_HOST}) esté listo..."
+for _ in $(seq 1 60); do
+    if curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null
+
+echo "Pull de ${MODEL_TAG} (no-op de red si ya está en cache)..."
+su ollama -s /bin/sh -c "OLLAMA_HOST=${OLLAMA_HOST} ollama pull '${MODEL_TAG}'"

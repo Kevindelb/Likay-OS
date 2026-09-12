@@ -1,0 +1,27 @@
+[Unit]
+Description=Likay-OS kiosk (cage + epiphany)
+After=kal-backend.service systemd-user-sessions.service getty@tty1.service
+Wants=kal-backend.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=kiosk
+Group=kiosk
+# PAMName=login registra una sesión real vía systemd-logind (pam_systemd)
+# — así el usuario "kiosk" recibe XDG_RUNTIME_DIR y los permisos de udev
+# (tags "uaccess") sobre /dev/dri/* y el input de teclado/mouse que cage
+# necesita para hablarle a DRM directo, sin un seatd separado.
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal+console
+UtmpIdentifier=tty1
+UtmpMode=user
+Restart=always
+RestartSec=2
+ExecStart=/usr/local/bin/likay-kiosk-start
+
+[Install]
+WantedBy=multi-user.target

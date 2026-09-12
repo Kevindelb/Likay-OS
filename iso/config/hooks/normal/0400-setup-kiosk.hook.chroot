@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+useradd -r -m -d /home/kiosk -s /bin/bash -G video,input,render kiosk
+
+chmod 0755 /usr/local/bin/likay-kiosk-start
+
+# `systemctl enable` acá solo escribe los symlinks de [Install] — no hace
+# falta un systemd corriendo de verdad dentro del chroot para esto.
+systemctl enable ollama.service
+systemctl enable kal-backend.service
+systemctl enable likay-kiosk.service

@@ -1,0 +1,24 @@
+[Unit]
+Description=kal backend (uvicorn / agent_core.orchestrator)
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+User=kal
+Group=kal
+WorkingDirectory=/opt/kal
+Environment=AGENT_ENV=production
+# --host 127.0.0.1, NO 0.0.0.0 como el Dockerfile de kal: ahí la
+# restricción a loopback la hace el mapeo de puertos de Docker
+# (docker-compose.yml: "127.0.0.1:8000:8000"). Acá no hay esa capa —
+# bindear 0.0.0.0 en un live-boot expondría la API del agente (incluido
+# /self-modification/apply, protegido solo por el token admin como
+# segunda capa) a toda la LAN. Ver el hallazgo de seguridad documentado
+# en vendor/kal/utils/admin_token.py (2026-07-09).
+ExecStart=/opt/kal/.venv/bin/uvicorn agent_core.orchestrator:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

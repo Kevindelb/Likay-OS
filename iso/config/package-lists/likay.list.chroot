@@ -1,0 +1,25 @@
+# Compositor kiosk — una sola app Wayland en pantalla completa, no un
+# escritorio (ver docs/ROADMAP.md, Etapa 1).
+cage
+
+# Navegador para el kiosk: epiphany (GNOME Web), no chromium/chromium-browser
+# — en Ubuntu esos son paquetes transicionales que instalan el snap, y un
+# snap necesita red en el primer arranque, lo cual rompe el objetivo de
+# "arranca offline" de esta etapa. epiphany es un .deb real (WebKitGTK,
+# más liviano que Blink) con modo app/kiosk (--application-mode).
+epiphany-browser
+
+# Python para correr el backend de kal (uvicorn + requirements-core/dev).
+python3
+python3-venv
+python3-pip
+
+# cryptography/chromadb normalmente traen wheels prebuildeadas para
+# manylinux x86_64, pero build-essential queda como red de seguridad
+# barata por si algún paquete de requirements-core.txt necesita compilar
+# en este momento del chroot's arquitectura/kernel.
+build-essential
+
+# Usado por el hook que instala Ollama (baja su script/tarball oficial).
+curl
+ca-certificates

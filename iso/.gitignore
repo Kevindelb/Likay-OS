@@ -1,0 +1,34 @@
+# Artefactos generados por `lb build` / `lb clean` — no versionar.
+# Lo que SÍ se versiona vive en config/{package-lists,includes.chroot,hooks,archives}
+# y se escribe a mano, no lo genera `lb config`.
+# Ancladas a la raíz de iso/ (con "/" inicial): sin esto, un patrón como
+# "cache/" o "local/" también matchea cualquier subcarpeta con ese nombre
+# en cualquier profundidad — se comía de verdad
+# config/includes.chroot/usr/local/ (bug real, encontrado al validar con
+# `git add -n` que likay-kiosk-start quedaba afuera del tracking).
+/.build/
+/cache/
+/chroot/
+/binary*/
+/local/
+*.iso
+*.img
+*.zsync
+*.contents
+*.packages
+*.files
+*.log
+
+# Contenido de includes.chroot que auto/build genera/copia en cada corrida
+# desde otras fuentes (vendor/kal, model-cache/, config/likay/model.conf)
+# — no es autoría a mano, no va versionado acá (evita además duplicar el
+# submódulo y, peor, comitear varios GB de blobs de modelo).
+config/includes.chroot/opt/kal/
+config/includes.chroot/usr/share/ollama/
+config/includes.chroot/etc/likay-os/
+
+# Cache persistente de modelos de Ollama entre corridas de build — a
+# propósito FUERA de cache/ (que `lb clean --cache` borra) y de chroot/
+# (que `lb clean --chroot`, o cualquier rebuild del stage de chroot,
+# borra). Ver el hook 0200-pull-ollama-model.hook.chroot.
+model-cache/

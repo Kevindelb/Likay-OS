@@ -1,0 +1,61 @@
+#!/bin/bash
+# A diferencia del auto/build de plantilla de live-build (un simple
+# passthrough a `lb build`), este hace dos cosas antes/después:
+#
+#   1. ANTES: siembra config/includes.chroot con lo que `lb build` no
+#      puede generar solo — el código de kal (vendor/kal, un submódulo,
+#      no algo que viva en el chroot de por sí) y los blobs de Ollama que
+#      ya estén en cache de una corrida anterior (model-cache/, vía
+#      hardlinks — instantáneo, sin red).
+#   2. DESPUÉS: sincroniza de vuelta a model-cache/ cualquier blob que el
+#      hook 0200-pull-ollama-model.hook.chroot haya tenido que bajar de
+#      verdad (cache frío o modelo nuevo) — así la
+#      PRÓXIMA build, aunque sea con `lb clean --chroot` de por medio,
+#      no vuelve a pagar esa descarga. Corre pase lo que pase (incluso si
+#      `lb build` falla en un stage posterior al de chroot), porque para
+#      entonces el pull ya pasó y no tiene sentido tirar ese trabajo.
+set -euo pipefail
+shopt -s inherit_errexit
+
+cd "$(dirname "${0}")/.."  # iso/
+
+# shellcheck disable=SC1091
+source config/likay/model.conf  # define MODEL_TAG (no se usa acá directo,
+                                 # pero documenta qué se está horneando)
+
+REPO_ROOT="$(cd .. && pwd)"
+MODEL_CACHE_DIR="model-cache"
+CHROOT_MODELS_DIR="chroot/usr/share/ollama/.ollama/models"
+INCLUDES_MODELS_DIR="config/includes.chroot/usr/share/ollama/.ollama/models"
+INCLUDES_KAL_DIR="config/includes.chroot/opt/kal"
+
+echo "==> Copiando vendor/kal a includes.chroot/opt/kal"
+mkdir -p "${INCLUDES_KAL_DIR}"
+rsync -a --delete \
+    --exclude='.git' \
+    --exclude='tests' \
+    --exclude='vscode-extension' \
+    "${REPO_ROOT}/vendor/kal/" "${INCLUDES_KAL_DIR}/"
+
+echo "==> Copiando config/likay/model.conf a includes.chroot/etc/likay-os/"
+mkdir -p config/includes.chroot/etc/likay-os
+cp config/likay/model.conf config/includes.chroot/etc/likay-os/model.conf
+
+mkdir -p "${MODEL_CACHE_DIR}" "${INCLUDES_MODELS_DIR}"
+if [ -n "$(ls -A "${MODEL_CACHE_DIR}" 2>/dev/null)" ]; then
+    echo "==> Sembrando modelos desde model-cache/ (hardlinks, sin red)"
+    cp -al "${MODEL_CACHE_DIR}/." "${INCLUDES_MODELS_DIR}/"
+else
+    echo "==> model-cache/ vacío todavía — el hook de Ollama va a bajar el modelo de verdad esta vez"
+fi
+
+sync_models_back() {
+    if [ -d "${CHROOT_MODELS_DIR}" ]; then
+        echo "==> Sincronizando modelos del chroot de vuelta a model-cache/ (para la próxima build)"
+        cp -al "${CHROOT_MODELS_DIR}/." "${MODEL_CACHE_DIR}/" 2>/dev/null \
+            || rsync -a "${CHROOT_MODELS_DIR}/" "${MODEL_CACHE_DIR}/"
+    fi
+}
+trap sync_models_back EXIT
+
+lb build "${@}" 2>&1 | tee build.log

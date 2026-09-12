@@ -1,0 +1,22 @@
+#!/bin/bash
+# Instala kal desde /opt/kal (código copiado ahí por auto/build, host,
+# antes de `lb build` — ver ese script) usando SOLO requirements-core.txt
+# + requirements-dev.txt, sin requirements-multimodal.txt (diffusers/torch
+# pesan varios GB y esta etapa no necesita generación de imagen/audio/video
+# — ver docs/ROADMAP.md, Etapa 1).
+set -euo pipefail
+
+useradd -r -m -d /opt/kal-home -s /bin/false kal
+
+python3 -m venv /opt/kal/.venv
+/opt/kal/.venv/bin/pip install --no-cache-dir --upgrade pip
+/opt/kal/.venv/bin/pip install --no-cache-dir \
+    -r /opt/kal/requirements-core.txt \
+    -r /opt/kal/requirements-dev.txt
+
+# data/ (memoria, admin_token, claves de firma) tiene que ser escribible
+# en runtime por el usuario "kal" — en el live system esto vive en la capa
+# overlay en RAM, así que no persiste entre arranques (esperado en esta
+# etapa: ver docs/ROADMAP.md, "nada de instalación persistente todavía").
+mkdir -p /opt/kal/data
+chown -R kal:kal /opt/kal /opt/kal-home

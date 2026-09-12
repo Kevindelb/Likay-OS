@@ -1,0 +1,16 @@
+#!/bin/bash
+# Lanzado por likay-kiosk.service. Espera a que kal-backend esté
+# realmente respondiendo (no solo "arrancado" — systemd After= solo
+# garantiza el orden de arranque, no que uvicorn ya haya bindeado el
+# puerto) antes de abrir el navegador, para no mostrar una pantalla de
+# "conexión rechazada" mientras kal todavía está importando chromadb/etc.
+set -euo pipefail
+
+for _ in $(seq 1 60); do
+    if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+exec cage -- epiphany --application-mode --profile="${HOME}/.epiphany-kiosk" http://127.0.0.1:8000

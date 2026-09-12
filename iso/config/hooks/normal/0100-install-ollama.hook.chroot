@@ -1,0 +1,17 @@
+#!/bin/bash
+# Instala Ollama dentro del chroot. No hay paquete .deb de Ollama en los
+# repos de Ubuntu (verificado: `apt-cache policy ollama` no devuelve
+# candidato) — se usa el script oficial, que además crea el usuario de
+# servicio "ollama" (home /usr/share/ollama) y el systemd unit.
+set -euo pipefail
+
+curl -fsSL https://ollama.com/install.sh | sh
+
+# auto/build (host) ya sembró /usr/share/ollama/.ollama/models con lo que
+# hubiera en iso/model-cache/ ANTES de que este hook corriera — en ese
+# momento el usuario "ollama" todavía no existía, así que esos archivos
+# quedaron con el dueño que tenía el proceso de build (root). Corregimos
+# acá, ahora que el usuario ya existe, en vez de depender de en qué orden
+# exacto live-build aplica includes.chroot vs. hooks.
+mkdir -p /usr/share/ollama/.ollama/models
+chown -R ollama:ollama /usr/share/ollama/.ollama
