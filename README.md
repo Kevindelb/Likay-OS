@@ -8,7 +8,9 @@
 
 ## Por qué existe (resumen)
 
-Kal, el proyecto del que parte esto, es un agente de IA con un kernel de seguridad real (permisos explícitos de filesystem/red, sandboxing con Docker, auditoría verificable, protección activa contra presión de RAM) que corre hoy como una aplicación sobre Windows/Linux. Likay-OS lleva esa misma base de seguridad un paso más allá: en vez de ser una app que el usuario abre, es el sistema que arranca directo y ya está listo para trabajar — administrando herramientas y agentes (incluidos agentes de terceros que el usuario ya usa hoy) bajo el mismo principio de seguridad que kal ya probó: **nunca confiar en el código interno de un agente — solo en el límite que el sistema le impone desde afuera.**
+Kal, el proyecto del que parte esto, **no es un agente de IA — es un kernel agéntico**: la infraestructura de seguridad (permisos explícitos de filesystem/red, sandboxing con Docker, auditoría verificable, protección activa contra presión de RAM) sobre la que hoy corre un agente de referencia, que orquesta modelos de IA (locales vía Ollama, o en la nube) para resolver tareas. Corre hoy como una aplicación sobre Windows/Linux. Likay-OS lleva esa misma base de seguridad un paso más allá: en vez de ser una app que el usuario abre, es el sistema que arranca directo y ya está listo para trabajar.
+
+La visión de esta nueva etapa — todavía por construir, no algo ya probado hoy — es que Likay-OS pueda administrar, además de modelos de IA, agentes de terceros que el usuario ya use en su trabajo, bajo el mismo principio de seguridad que kal ya validó: **nunca confiar en el código interno de un agente — solo en el límite que el sistema le impone desde afuera.**
 
 Visión a largo plazo (no el plan inmediato): eventualmente, un kernel propio e independiente, construido con la colaboración de una comunidad. El camino hasta ahí pasa primero por aprovechar Linux al máximo — ver `docs/ROADMAP.md`.
 
