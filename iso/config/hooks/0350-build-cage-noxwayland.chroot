@@ -1,0 +1,78 @@
+#!/bin/bash
+set -euo pipefail
+
+# En QEMU (renderizado por software), cage 0.2.1 crashea con un
+# assertion failure real en wlroots al arrancar epiphany:
+#   cage: xwayland/xwm.c:592: xwayland_surface_destroy: Assertion
+#   'wl_list_empty(&xsurface->events.associate.listener_list)' failed
+# precedido por "(EE) failed to read Wayland events: Broken pipe".
+#
+# Confirmado con el log serial: cage arranca Xwayland automáticamente
+# apenas el backend DRM está listo (antes de que epiphany llegue a
+# correr nada), aunque epiphany es un cliente Wayland nativo puro y
+# jamás lo necesita. Cuando Xwayland se cae/desconecta sin que ningún
+# cliente real haya creado una superficie X11, wlroots (xwm.c, parte
+# de libwlroots-0.19, no de cage) pisa un bug propio al limpiar una
+# estructura interna de su gestor de ventanas X11 — no es un problema
+# de epiphany ni de WebKit (confirmado vía upstream: issue cage-kiosk/
+# cage#293, "cage fails ... even for Wayland-only apps" — Xwayland se
+# arranca sí o sí, sin importar si el cliente lo necesita).
+#
+# La versión de cage en Ubuntu resolute (0.2.1-1) no tiene forma de
+# desactivar Xwayland en runtime: el flag "-x" recién se agregó
+# upstream en abril 2026 (commit 14d12cfa), y para entonces cage ya
+# había subido su dependencia a wlroots 0.20 (commit b5c3e71, febrero
+# 2026) — versión que no existe empaquetada acá (solo
+# libwlroots-0.19-dev). No hay ningún tag de cage que tenga el flag
+# "-x" Y siga pidiendo wlroots 0.19 a la vez.
+#
+# Solución: recompilar cage 0.2.1 desde su propio código fuente
+# (exactamente la misma versión que trae el paquete .deb, misma
+# libwlroots-0.19 del sistema — sin downgrade/upgrade de nada) pero
+# forzando CAGE_HAS_XWAYLAND a 0. Todo el código que crea/usa Xwayland
+# en cage.c está detrás de "#if CAGE_HAS_XWAYLAND" — con esto en 0, ese
+# bloque ni se compila, así que cage jamás intenta lanzar el binario
+# Xwayland. Elimina el bug de raíz en vez de esquivarlo con variables
+# de entorno (que ya probamos y no alcanzaban, porque el problema no
+# está en epiphany).
+#
+# IMPORTANTE: xwayland.c en sí NO tiene ningún "#if CAGE_HAS_XWAYLAND"
+# adentro (a diferencia de cage.c) — depende por completo de que meson
+# decida, en tiempo de CONFIGURACIÓN, si lo agrega o no a la lista de
+# fuentes (meson.build: "if conf_data.get('CAGE_HAS_XWAYLAND', 0) == 1:
+# cage_sources += 'xwayland.c'"), en base a si wlroots fue compilado
+# con soporte X11 (have_xwayland). Un primer intento acá parchando
+# config.h DESPUÉS de "meson setup" pero antes de compilar rompió el
+# build: xwayland.c se seguía compilando igual (ya estaba en la lista
+# de fuentes, decidido antes del parche) pero server.h ya no declaraba
+# los campos/enums que xwayland.c usa (esos sí están detrás de
+# "#if CAGE_HAS_XWAYLAND" en server.h) — "'struct cg_server' has no
+# member named 'new_xwayland_surface'". Por eso acá parcheamos
+# meson.build ANTES de configurar, para que "have_xwayland" sea false
+# desde el principio: consistente en todos lados (config.h, la lista
+# de fuentes, todo).
+
+BUILD_DEPS="meson ninja-build pkg-config git libwlroots-0.19-dev libwayland-dev wayland-protocols libxkbcommon-dev"
+
+apt-get update
+apt-get install -y --no-install-recommends ${BUILD_DEPS}
+
+SRC_DIR="$(mktemp -d)"
+git clone --branch v0.2.1 --depth 1 https://github.com/cage-kiosk/cage.git "${SRC_DIR}"
+cd "${SRC_DIR}"
+
+sed -i "s/^have_xwayland = .*/have_xwayland = false/" meson.build
+grep -qx 'have_xwayland = false' meson.build
+
+meson setup build -Dman-pages=disabled --buildtype=release
+ninja -C build
+install -m 0755 build/cage /usr/bin/cage
+
+cd /
+rm -rf "${SRC_DIR}"
+
+# Los paquetes de desarrollo/build (meson, headers -dev, etc.) no los
+# necesita nada en runtime — nuestro cage recompilado quedó instalado
+# como archivo suelto en /usr/bin/cage (no vía dpkg), así que purgar
+# esto no puede dejar a ningún paquete con dependencias rotas.
+apt-get purge -y ${BUILD_DEPS}

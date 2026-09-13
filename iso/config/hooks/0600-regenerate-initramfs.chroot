@@ -1,0 +1,15 @@
+#!/bin/bash
+# casper (recién instalado vía el package-list, junto con su dependencia
+# initramfs-tools) no hace efecto solo — el kernel ya se instaló antes
+# en esta misma corrida de chroot_install-packages, y en ESE momento su
+# postinst generó el initrd con dracut (el generador default de Ubuntu
+# 26.04, que no tiene ningún hook para el medio live de casper). Forzar
+# `update-initramfs` acá pisa ese initrd con uno generado de verdad por
+# initramfs-tools — el framework para el que casper está hecho (Depends:
+# initramfs-tools en el propio paquete) — así el hook de casper sí queda
+# adentro y el arranque puede encontrar el filesystem squashfs del medio
+# live. Sin esto: dracut entra en "emergency mode" al no encontrar la
+# raíz (confirmado arrancando de verdad en QEMU).
+set -euo pipefail
+
+update-initramfs -u -k all

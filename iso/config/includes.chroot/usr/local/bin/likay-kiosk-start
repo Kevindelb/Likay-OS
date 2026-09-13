@@ -13,4 +13,38 @@ for _ in $(seq 1 60); do
     sleep 1
 done
 
-exec cage -- epiphany --application-mode --profile="${HOME}/.epiphany-kiosk" http://127.0.0.1:8000
+# El directorio de perfil de epiphany en modo --application-mode NO es
+# un directorio cualquiera: epiphany lo trata como un perfil de "web
+# app" propiamente dicho, y valida dos cosas sobre él (encontrado
+# depurando con gdb en vivo, cage/epiphany morían en silencio, SIGABRT,
+# sin loguear nada útil por systemd):
+#
+# 1. El NOMBRE (basename) tiene que empezar con el prefijo
+#    "org.gnome.Epiphany.WebApp_" — si no,
+#    ephy_web_application_get_gapplication_id_from_profile_directory()
+#    devuelve NULL y ephy_web_application_setup_from_profile_directory()
+#    llama a g_error() (fatal) con "Failed to get GApplication ID from
+#    profile directory".
+# 2. Tiene que existir un archivo VACÍO ".app" adentro — sin él,
+#    ephy_profile_dir_is_web_application() da falso, y más adelante
+#    ephy_settings_get() llama a g_error() (fatal) con "Epiphany is
+#    trying to access web app settings outside web app mode" (ver
+#    epiphany#713 en su propio bug tracker — es un crash conocido de
+#    perfiles de "web app" rotos/incompletos, y el nuestro nunca había
+#    sido creado por la UI normal de epiphany que arma estas dos cosas
+#    sola).
+PROFILE_DIR="${HOME}/org.gnome.Epiphany.WebApp_likaykiosk"
+mkdir -p "${PROFILE_DIR}"
+touch "${PROFILE_DIR}/.app"
+
+# D-Bus: epiphany necesita un bus de sesión real (XDG Desktop Portal,
+# dconf, etc. — ver el paquete xdg-desktop-portal en el package-list).
+# NO alcanza con dejar que epiphany dispare el "autolaunch" de D-Bus
+# por su cuenta (mecanismo por defecto cuando no hay
+# $DBUS_SESSION_BUS_ADDRESS) — ese autolaunch depende de X11
+# ("Cannot autolaunch D-Bus without X11 $DISPLAY", encontrado con gdb),
+# y acá no hay ningún X11 corriendo a propósito (cage se compiló sin
+# Xwayland — ver el hook 0350-build-cage-noxwayland.chroot). Arrancamos
+# nuestro propio bus de sesión con dbus-run-session, que no necesita
+# X11 para nada.
+exec dbus-run-session -- cage -- epiphany --application-mode --profile="${PROFILE_DIR}" http://127.0.0.1:8000

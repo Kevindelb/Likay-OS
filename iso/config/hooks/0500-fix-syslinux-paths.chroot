@@ -1,0 +1,62 @@
+#!/bin/bash
+# La plantilla de isolinux que trae esta versión de live-build
+# (/usr/share/live/build/bootloaders/isolinux/) espera isolinux.bin y
+# vesamenu.c32 en la ruta plana vieja de syslinux 4.x
+# (/usr/lib/syslinux/{isolinux.bin,vesamenu.c32}) — el syslinux moderno
+# de Ubuntu 26.04 los instala en otro lado. Symlinks de compatibilidad
+# para que el cp -aL de lb_binary_syslinux los encuentre.
+set -euo pipefail
+
+ln -sf /usr/lib/ISOLINUX/isolinux.bin /usr/lib/syslinux/isolinux.bin
+ln -sf /usr/lib/syslinux/modules/bios/vesamenu.c32 /usr/lib/syslinux/vesamenu.c32
+
+# ldlinux.c32 (módulo obligatorio desde syslinux 5.x — ISOLINUX ya no
+# es standalone, necesita este módulo al lado para arrancar) NO estaba
+# ni en la plantilla vieja de live-build ni se copiaba de ningún lado —
+# faltaba directo, no era un problema de ruta. Encontrado arrancando de
+# verdad en QEMU: "ISOLINUX 6.04 ... Failed to load ldlinux.c32 / Boot
+# failed". Va referenciado desde config/bootloaders/isolinux/
+# (ldlinux.c32 -> acá) para que viaje con el resto de la plantilla.
+ln -sf /usr/lib/syslinux/modules/bios/ldlinux.c32 /usr/lib/syslinux/ldlinux.c32
+
+# lb_binary_syslinux también da por sentado, sin condición y para
+# cualquier tema (LB_MODE=ubuntu dispara esto siempre, no depende de
+# --syslinux-theme), que existe /usr/share/gfxboot-theme-ubuntu/
+# bootlogo.tar.gz — el paquete "gfxboot-theme-ubuntu" que lo provee está
+# discontinuado (Candidato: ninguno en el repo, no instalable de ninguna
+# forma). Un tar.gz vacío pero válido alcanza: el script solo lo extrae
+# ("tar xfz ... -C destino") para sumar un splash gráfico del boot, algo
+# puramente cosmético que un kiosco no necesita.
+mkdir -p /usr/share/gfxboot-theme-ubuntu
+tar czf /usr/share/gfxboot-theme-ubuntu/bootlogo.tar.gz -T /dev/null
+
+# lb_binary_syslinux invoca "rsvg --format png --height H --width W
+# entrada.svg salida.png" — la sintaxis vieja de antes de que
+# librsvg2-bin se renombrara a rsvg-convert (hace años), donde el ÚLTIMO
+# argumento posicional era la salida. rsvg-convert ya no funciona así:
+# sin "-o" trata TODOS los posicionales como archivos de entrada
+# ("Multiple SVG files are only allowed for PDF and (E)PS output" —
+# un symlink simple no alcanza, hace falta traducir). Wrapper: el último
+# argumento pasa a ser "-o <archivo>".
+#
+# BUG REAL YA CORREGIDO ACÁ: una corrida anterior dejó /usr/bin/rsvg
+# como symlink -> /usr/bin/rsvg-convert (el fix viejo, de symlink
+# simple). El "cat > /usr/bin/rsvg" de esta versión del hook, al
+# encontrar un symlink ahí, escribió A TRAVÉS de él — corrompiendo
+# /usr/bin/rsvg-convert mismo con el contenido del wrapper (que a su vez
+# llama a "rsvg-convert" por PATH... encontrándose a sí mismo: loop
+# infinito real que hubo que cortar a mano, exec tras exec agregando un
+# "-o" de más en cada vuelta). Reinstalar el paquete restaura el binario
+# real; "rm -f" antes del cat asegura que nunca más se escriba a través
+# de un symlink viejo.
+apt-get install --reinstall --yes librsvg2-bin
+rm -f /usr/bin/rsvg
+cat > /usr/bin/rsvg << 'EOF'
+#!/bin/bash
+args=("$@")
+n=${#args[@]}
+out="${args[$((n-1))]}"
+unset 'args[$((n-1))]'
+exec /usr/bin/rsvg-convert -o "${out}" "${args[@]}"
+EOF
+chmod 755 /usr/bin/rsvg

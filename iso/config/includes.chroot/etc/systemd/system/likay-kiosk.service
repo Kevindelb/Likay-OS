@@ -15,8 +15,35 @@ Group=kiosk
 PAMName=login
 TTYPath=/dev/tty1
 StandardInput=tty
-StandardOutput=journal
+StandardOutput=journal+console
 StandardError=journal+console
+# Sin GPU real (QEMU sin passthrough, o hardware sin driver 3D andando),
+# wlroots/cage se niegan a arrancar con renderizado por software a menos
+# que se lo permitamos explícitamente — mensaje real: "Software
+# rendering detected, please use the WLR_RENDERER_ALLOW_SOFTWARE
+# environment variable to proceed". Con GPU real (el target, un 780M)
+# esto no cambia nada — solo habilita el fallback, no lo fuerza.
+Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
+# Escape hatch documentado de WebKitGTK — sin esto, el sandbox interno
+# (bubblewrap + user namespaces) no logra inicializarse en el chroot
+# mínimo de la ISO y epiphany aborta apenas arranca. Razonable acá: el
+# kiosco solo muestra nuestro propio localhost:8000, no navegación
+# libre de sitios no confiables.
+Environment=WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+# Las cuatro variables de acá abajo (GDK_BACKEND, NO_AT_BRIDGE,
+# GTK_USE_PORTAL, WEBKIT_DISABLE_DMABUF_RENDERER) se agregaron mientras
+# se investigaba un crash de cage en xwayland/xwm.c:592 — la causa real
+# terminó siendo otra (cage 0.2.1 arrancaba Xwayland sin que epiphany lo
+# necesitara nunca; ver el hook 0350-build-cage-noxwayland.chroot, que
+# recompila cage sin soporte de Xwayland en absoluto). Con eso resuelto
+# de raíz, ninguna de estas cuatro es necesaria — pero tampoco estorban
+# (confirmado: el boot exitoso en QEMU las tenía puestas), así que se
+# dejan por ahora en vez de arriesgar otra ronda de pruebas solo para
+# sacarlas.
+Environment=GDK_BACKEND=wayland
+Environment=NO_AT_BRIDGE=1
+Environment=GTK_USE_PORTAL=0
+Environment=WEBKIT_DISABLE_DMABUF_RENDERER=1
 UtmpIdentifier=tty1
 UtmpMode=user
 Restart=always

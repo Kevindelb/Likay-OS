@@ -41,11 +41,19 @@ echo "==> Copiando config/likay/model.conf a includes.chroot/etc/likay-os/"
 mkdir -p config/includes.chroot/etc/likay-os
 cp config/likay/model.conf config/includes.chroot/etc/likay-os/model.conf
 
-mkdir -p "${MODEL_CACHE_DIR}" "${INCLUDES_MODELS_DIR}"
+mkdir -p "${MODEL_CACHE_DIR}"
 if [ -n "$(ls -A "${MODEL_CACHE_DIR}" 2>/dev/null)" ]; then
     echo "==> Sembrando modelos desde model-cache/ (hardlinks, sin red)"
+    # -rf + recrear en vez de sembrar sobre lo que ya hubiera: cp -al no
+    # es idempotente contra un destino que ya tiene estos mismos
+    # archivos (aunque sea el mismo hardlink de una corrida anterior) —
+    # "File exists" con set -e activo aborta TODO el script acá mismo,
+    # antes de llegar siquiera a `lb build` (encontrado en vivo).
+    rm -rf "${INCLUDES_MODELS_DIR}"
+    mkdir -p "${INCLUDES_MODELS_DIR}"
     cp -al "${MODEL_CACHE_DIR}/." "${INCLUDES_MODELS_DIR}/"
 else
+    mkdir -p "${INCLUDES_MODELS_DIR}"
     echo "==> model-cache/ vacío todavía — el hook de Ollama va a bajar el modelo de verdad esta vez"
 fi
 
@@ -58,4 +66,108 @@ sync_models_back() {
 }
 trap sync_models_back EXIT
 
-lb build "${@}" 2>&1 | tee build.log
+# Ahora que forzamos arriba que binary_* corra siempre (no solo la
+# primera vez), binary/ de una build anterior queda en el medio:
+# lb_binary_syslinux hace algo parecido a "mv chroot/root/isolinux.tmp
+# binary/isolinux/isolinux.tmp" — si ese destino YA existe (como
+# directorio, de la corrida anterior), Unix mete el origen ADENTRO en
+# vez de reemplazarlo ("mv: cannot overwrite 'binary/isolinux/
+# isolinux.tmp': El directorio no está vacío", encontrado en vivo).
+# `auto/clean --binary` borra binary/ entero para evitar justo esto —
+# como ya no dependemos de que el usuario lo corra a mano antes de cada
+# build, lo hacemos nosotros acá.
+rm -rf binary
+
+# lb_binary_syslinux (de esta versión de live-build) tiene hardcodeado
+# "binary/live/" para mover vmlinuz/initrd.img — pero con
+# LB_INITRAMFS=casper (lo correcto para --mode ubuntu, y lo que el resto
+# del ISO espera: filesystem.squashfs bajo casper/, etc.),
+# lb_binary_linux-image los deja en "binary/casper/" en cambio. El script
+# SÍ actualiza el parámetro de boot (boot=live -> boot=casper) pero NO el
+# path de este mv — soporte de casper incompleto en esta versión. Un
+# symlink alcanza: mv a través del symlink opera igual que sobre el
+# directorio real. Tiene que rehacerse en cada build porque acabamos de
+# borrar binary/ entero (y porque, antes de este cambio, ya lo borraba
+# `auto/clean --binary`).
+mkdir -p binary
+ln -sfn casper binary/live
+
+# (El bootlogo cpio vacío para gfxboot-theme-ubuntu ya NO se pre-crea
+# acá — ver config/bootloaders/isolinux/bootlogo: pre-crear
+# binary/isolinux/ a mano rompía el `mv chroot/root/isolinux.tmp
+# ${_TARGET}` de lb_binary_syslinux — cuando el destino de un mv YA
+# existe como directorio, Unix mete el origen ADENTRO en vez de
+# reemplazarlo, así que isolinux.bin terminaba enterrado en
+# binary/isolinux/isolinux.tmp/ en vez de en binary/isolinux/ directo
+# ["genisoimage: Uh oh, I cant find the boot image 'isolinux/isolinux.bin'"].
+# La forma correcta es el override que el propio script ya soporta:
+# config/bootloaders/<nombre> en vez de su plantilla interna — así el
+# bootlogo viaja con el resto de la plantilla y el mv-rename nunca
+# encuentra un directorio destino preexistente.)
+
+# Bug real y aislado de lb_binary_syslinux: usa "${_SUFFIX}/live.cfg" en
+# la rama casper de LB_INITRAMFS en vez de "${_TARGET}/live.cfg" —
+# "_SUFFIX" no se define en ningún lado del script (typo, confirmado con
+# grep -rn en todo /usr/lib/live/build y /usr/share/live/build: este es
+# el único uso), así que se expande vacío y el sed -i termina apuntando
+# a "/live.cfg" (la raíz del filesystem, no existe ahí). Como es una
+# variable de shell nunca asignada dentro del script, toma el valor
+# heredado del entorno si lo exportamos acá — no hace falta tocar el
+# script de live-build.
+export _SUFFIX="binary/isolinux"
+
+# Igual que chroot_includes (que SIEMPRE reaplica config/includes.chroot
+# por el bug de nombres de marker que ya documentamos en otro lado), acá
+# nos chocamos con el problema inverso: el resto de los markers de
+# .build/ SÍ funcionan como esperan, y eso es un problema para
+# nosotros. chroot/ se conserva entre builds a propósito (para no pagar
+# de nuevo el apt/pip de instalar kal, cage, etc. en cada iteración),
+# pero eso significa que los hooks de config/hooks/*.chroot (que si
+# tocan algo REAL adentro de chroot/, como recompilar cage) y TODA la
+# etapa binary_* (que arma filesystem.squashfs y el resto de binary/ a
+# partir de chroot/) quedan con su marker ya escrito de la build
+# anterior — "W: skipping ..., already done" — y jamás vuelven a
+# correr, aunque el contenido de chroot/ haya cambiado de verdad.
+# Encontrado en vivo: un hook nuevo que recompilaba cage se instalaba
+# bien en chroot/usr/bin/cage (confirmado con `file`/tamaño/timestamp),
+# pero el .iso final seguía arrancando con el cage viejo — el
+# filesystem.squashfs embebido tenía timestamp de una build de horas
+# antes, porque lb_binary_rootfs (junto con chroot_hooks y todo
+# binary_*) se había saltado entero. Forzamos que estas etapas corran
+# siempre — son justo las que tienen que reflejar el estado actual de
+# chroot/ o de config/, no las genuinamente costosas y estables
+# (bootstrap: el debootstrap base de Ubuntu) que sí vale la pena
+# cachear entre iteraciones.
+#
+# El mismo problema, encontrado por separado, alcanza también a
+# chroot_package-lists/chroot_install-packages: python3-venv está en
+# config/package-lists/likay.list.chroot pero dpkg nunca lo tenía
+# instalado (confirmado: "un" en dpkg -l) — el marker de esa etapa
+# quedó viejo de antes de que python3-venv se agregara a la lista, y
+# como nunca se limpiaba, la instalación real de paquetes jamás volvía
+# a correr aunque el archivo .list.chroot cambiara. Sintomático recién
+# ahora porque el hook de kal (0300) veía el .venv YA armado de una
+# build muy anterior (de cuando sí estaba) y no fallaba — hasta que acá
+# arriba empezamos a forzar que chroot_hooks corra siempre.
+rm -f .build/chroot_hooks .build/chroot_hacks .build/binary_* \
+      .build/chroot_package-lists.install .build/chroot_package-lists.live \
+      .build/chroot_install-packages.install .build/chroot_install-packages.live
+
+# noauto es obligatorio acá: `lb build` (el comando), si encuentra un
+# auto/build ejecutable en el directorio, se relanza solo a través de él
+# — es el mecanismo que nos trajo hasta acá (invocamos ESTE script, que
+# a su vez llama a `lb build`). Sin "noauto" como primer argumento, esa
+# misma detección dispara nuevamente: auto/build -> lb build -> detecta
+# auto/build -> lo vuelve a correr -> ad infinitum (pasó de verdad: un
+# build real terminó con más de 1000 procesos lb_build corriendo antes
+# de poder cortarlo a mano). Ver /usr/lib/live/build/lb_build línea 24:
+# `if [ "${1}" != "noauto" ] && [ -x auto/build ]; then ... ./auto/build`.
+lb build noauto "${@}" 2>&1 | tee build.log
+
+# lb_binary_iso de esta versión de live-build deja binary.hybrid.iso
+# roto de dos formas distintas (símlink binary/live horneado como
+# archivo vacío, y el squashfs >4GiB con tamaño mal representado sin
+# UDF) — ver el comentario completo en scripts/rebuild-iso-with-fixes.sh.
+# Ninguna de las dos se nota en el build en sí (termina "bien"), solo
+# arrancando la ISO de verdad.
+scripts/rebuild-iso-with-fixes.sh

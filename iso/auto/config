@@ -1,20 +1,59 @@
 #!/bin/sh
 set -e
 
+cd "$(dirname "${0}")/.."  # iso/ — ver el comentario equivalente en auto/clean:
+                            # sin esto, invocado desde otro directorio, termina
+                            # operando en el lugar equivocado.
+
 # Genera config/ para live-build. Este script queda versionado en vez de
 # `config/` directamente porque `lb config` regenera esa carpeta entera
 # (mezcla de boilerplate y overrides nuestros) — así el build es
 # reproducible sin tener que commitear los artefactos generados.
 #
 # Etapa 1 del roadmap (docs/ROADMAP.md): base mínima, sin instalador
-# (--debian-installer none), sin persistencia. Targetea la misma release
+# (--debian-installer false), sin persistencia. Targetea la misma release
 # LTS de Ubuntu que se usa para desarrollar kal.
+#
+# --debian-installer false, NO "none": el --help de `lb config` lista
+# true|cdrom|netinst|netboot|businesscard|live|false — "none" no es un
+# valor válido, aunque el comentario que el propio `lb config` escribe en
+# config/binary diga "(Default: none)" (confundí ambas cosas la primera
+# vez). Con "none" el error recién aparece tarde, en la etapa de binary
+# (lb_binary_debian-installer), no al configurar.
 #
 # La versión de live-build que empaqueta Ubuntu (3.0~a57) es de una línea
 # más vieja que la documentada en los tutoriales de Debian Live actuales:
 # --bootloader es singular (grub|syslinux|yaboot, sin lista EFI+BIOS), y
 # no hay --hostname/--username acá — el hostname se fija después con
 # config/includes.chroot/etc/hostname.
+#
+# --bootloader syslinux, no grub2 pese a que grub2 SÍ llegó a instalarse
+# bien (después de esquivar "grub-legacy", ver HISTORY más abajo): con
+# --binary-images iso-hybrid, el post-proceso que hace el ISO booteable
+# por USB (isohybrid, de la familia syslinux) espera específicamente un
+# isolinux.bin con firma híbrida en el catálogo El Torito — con GRUB2 como
+# bootloader BIOS, el boot image embebido es el de GRUB, no isolinux, e
+# isohybrid lo rechaza ("boot loader does not have an isolinux.bin hybrid
+# signature"). grub2+iso-hybrid es una combinación que esta versión vieja
+# de live-build no soporta bien junta. syslinux es la combinación nativa
+# con la que isohybrid sí funciona. Tampoco es una pérdida real: NI
+# "grub2" NI "syslinux" generan boot UEFI de verdad en esta versión (son
+# BIOS/legacy nada más, live-build sumó UEFI hybrid recién en versiones
+# bastante más nuevas que esta) — alcanza para probar en QEMU (BIOS/
+# SeaBIOS por default), pero antes de grabar en USB para hardware real
+# (que puede no tener CSM/legacy boot habilitado) hay que resolver esto
+# aparte.
+#
+# --syslinux-theme live-build: el default ("ubuntu-oneiric", de Ubuntu
+# 11.10) pide el paquete syslinux-themes-ubuntu-oneiric, que ya no existe
+# en ningún repo — mismo patrón que "grub-legacy". "live-build" es el
+# valor especial que el script reconoce para NO usar un tema empaquetado,
+# solo necesita librsvg2-bin (que sí existe siempre).
+#
+# --zsync false: zsync genera metadata para actualizar el .iso de forma
+# incremental por HTTP — no aplica a un USB local de desarrollo, y evita
+# sumar otro paquete (zsync) solo para eso a la lista de "instalar antes
+# para esquivar el bug de start-stop-daemon" de más abajo.
 #
 # LB_UNION_FILESYSTEM: el default de live-build es "aufs", pero aufs no
 # existe como módulo en el kernel de esta release (verificado: `modinfo
@@ -29,7 +68,19 @@ lb config noauto \
     --architectures amd64 \
     --archive-areas "main restricted universe multiverse" \
     --binary-images iso-hybrid \
-    --bootloader grub \
-    --debian-installer none \
+    --bootloader syslinux \
+    --syslinux-theme live-build \
+    --debian-installer false \
     --memtest none \
+    --zsync false \
     "${@}"
+
+# -allow-limited-size: nuestro squashfs (sistema completo + kal + el
+# modelo de Ollama horneado, ~3.4GB) supera los 4GiB-1 del límite
+# clásico de un archivo dentro de ISO-9660, y genisoimage aborta sin
+# este flag ("There is no way do represent this file size"). A
+# diferencia de LB_UNION_FILESYSTEM, esta variable (GENISOIMAGE_
+# OPTIONS_EXTRA) se escribe fija en config/common (sin fallback ${VAR:-...}
+# a variable de entorno), así que exportarla no alcanza — hay que
+# parchear el archivo generado directamente, después de `lb config`.
+sed -i 's|^GENISOIMAGE_OPTIONS_EXTRA=.*|GENISOIMAGE_OPTIONS_EXTRA="-allow-limited-size"|' config/common

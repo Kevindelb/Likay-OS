@@ -25,8 +25,8 @@ LB_BOOTAPPEND_INSTALL=""
 LB_BOOTAPPEND_FAILSAFE="memtest noapic noapm nodma nomce nolapic nomodeset nosmp nosplash vga=normal"
 
 # $LB_BOOTLOADER: set bootloader
-# (Default: grub)
-LB_BOOTLOADER="grub"
+# (Default: syslinux)
+LB_BOOTLOADER="syslinux"
 
 # $LB_CHECKSUMS: set checksums
 # (Default: sha256)
@@ -37,8 +37,8 @@ LB_CHECKSUMS="sha256"
 LB_COMPRESSION="xz"
 
 # $LB_ZSYNC: set zsync
-# (Default: true)
-LB_ZSYNC="true"
+# (Default: false)
+LB_ZSYNC="false"
 
 # ${LB_BUILD_WITH_CHROOT: control if we build binary images chrooted
 # (Default: true)
@@ -46,8 +46,8 @@ LB_ZSYNC="true"
 LB_BUILD_WITH_CHROOT="true"
 
 # $LB_DEBIAN_INSTALLER: set debian-installer
-# (Default: none)
-LB_DEBIAN_INSTALLER="none"
+# (Default: false)
+LB_DEBIAN_INSTALLER="false"
 
 # $LB_DEBIAN_INSTALLER_DISTRIBUTION: set debian-installer suite
 # (Default: empty)
@@ -78,16 +78,16 @@ LB_HDD_SIZE="10000"
 LB_ISO_APPLICATION="Ubuntu Live"
 
 # $LB_ISO_PREPARER: set iso preparer
-# (Default: live-build $VERSION; http://packages.qa.debian.org/live-build)
-LB_ISO_PREPARER="live-build $VERSION; http://packages.qa.debian.org/live-build"
+# (Default: live-build 3.0~a57-1; http://packages.qa.debian.org/live-build)
+LB_ISO_PREPARER="live-build 3.0~a57-1; http://packages.qa.debian.org/live-build"
 
 # $LB_ISO_PUBLISHER: set iso publisher
 # (Default: Debian Live project; http://live.debian.net/; debian-live@lists.debian.org)
 LB_ISO_PUBLISHER="Debian Live project; http://live.debian.net/; debian-live@lists.debian.org"
 
 # $LB_ISO_VOLUME: set iso volume (max 32 chars)
-# (Default: Ubuntu resolute $(date +%Y%m%d-%H:%M))
-LB_ISO_VOLUME="Ubuntu resolute $(date +%Y%m%d-%H:%M)"
+# (Default: Ubuntu resolute 20260912-16:14)
+LB_ISO_VOLUME="Ubuntu resolute 20260912-16:14"
 
 # $LB_EXT_BLOCKSIZE: set EXT block size
 # (Default: unset)
@@ -166,5 +166,5 @@ LB_SWAP_FILE_PATH=""
 LB_SWAP_FILE_SIZE="512"
 
 # $LB_SYSLINUX_THEME: set syslinux theme package
-# (Default: ubuntu-oneiric)
-LB_SYSLINUX_THEME="ubuntu-oneiric"
+# (Default: live-build)
+LB_SYSLINUX_THEME="live-build"

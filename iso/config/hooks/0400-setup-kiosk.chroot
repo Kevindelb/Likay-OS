@@ -1,12 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
-useradd -r -m -d /home/kiosk -s /bin/bash -G video,input,render kiosk
+# Idempotente, mismo motivo que 0300-install-kal.chroot.
+if ! id kiosk >/dev/null 2>&1; then
+    useradd -r -m -d /home/kiosk -s /bin/bash -G video,input,render kiosk
+fi
 
 chmod 0755 /usr/local/bin/likay-kiosk-start
 
 # `systemctl enable` acá solo escribe los symlinks de [Install] — no hace
 # falta un systemd corriendo de verdad dentro del chroot para esto.
-systemctl enable ollama.service
+# ollama.service condicional: en esta prueba puntual sacamos Ollama del
+# build (ver docs de la etapa — squashfs >4GB), así que el unit ni
+# existe todavía.
+if [ -e /etc/systemd/system/ollama.service ]; then
+    systemctl enable ollama.service
+fi
 systemctl enable kal-backend.service
 systemctl enable likay-kiosk.service

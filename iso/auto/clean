@@ -1,4 +1,14 @@
 #!/bin/sh
 set -e
 
-lb clean "${@}"
+cd "$(dirname "${0}")/.."  # iso/ — sin esto, invocado como `sudo iso/auto/clean`
+                            # desde la raíz del repo, `lb clean` termina limpiando
+                            # (nada, silenciosamente) el directorio equivocado en
+                            # vez de iso/. Encontrado en vivo: --binary no borraba
+                            # nada y no avisaba, porque no hay `binary/` en la raíz
+                            # del repo. Mismo patrón que ya tiene auto/build.
+
+# noauto obligatorio: mismo mecanismo de auto-redespacho que rompió
+# auto/build (ver el comentario ahí) — `lb clean` también se relanza
+# solo vía ./auto/clean si lo encuentra ejecutable.
+lb clean noauto "${@}"

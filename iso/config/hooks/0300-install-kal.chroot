@@ -6,7 +6,13 @@
 # — ver docs/ROADMAP.md, Etapa 1).
 set -euo pipefail
 
-useradd -r -m -d /opt/kal-home -s /bin/false kal
+# Idempotente: este hook puede correr más de una vez sobre el mismo
+# chroot persistente entre iteraciones de desarrollo (ver auto/build /
+# model-cache) — useradd sin este chequeo falla en seco si el usuario ya
+# existe de una corrida anterior.
+if ! id kal >/dev/null 2>&1; then
+    useradd -r -m -d /opt/kal-home -s /bin/false kal
+fi
 
 python3 -m venv /opt/kal/.venv
 /opt/kal/.venv/bin/pip install --no-cache-dir --upgrade pip

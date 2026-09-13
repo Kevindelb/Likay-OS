@@ -19,6 +19,12 @@ Environment=AGENT_ENV=production
 ExecStart=/opt/kal/.venv/bin/uvicorn agent_core.orchestrator:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=2
+# Por default systemd solo manda esto al journal — sin acceso a
+# persistencia ni journalctl interactivo en la VM de prueba, no se veía
+# nada de por qué kal-backend no respondía. journal+console (mismo
+# patrón que likay-kiosk.service) lo saca por la consola/serial.
+StandardOutput=journal+console
+StandardError=journal+console
 
 [Install]
 WantedBy=multi-user.target

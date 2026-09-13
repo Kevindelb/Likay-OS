@@ -1,6 +1,34 @@
+# El kernel en sí. Normalmente live-build lo encola solo
+# (lb_chroot_linux-image, vía LB_LINUX_PACKAGES/LB_LINUX_FLAVOURS =
+# "linux"/"generic") pero ese paso corrió una sola vez, muy al principio,
+# y su marker (.build/chroot_linux-image) nunca se volvió a limpiar en
+# todas las veces que sí forzamos reinstalar chroot_package-lists /
+# chroot_install-packages después — se desincronizó y el kernel quedó
+# afuera (encontrado en lb_binary_linux-image: "cannot stat 'chroot/boot/
+# vmlinuz-*'", chroot/lib/modules ni existía). Puesto acá directo, en
+# nuestro propio package-list, no depende de ese mecanismo aparte.
+linux-image-generic
+
 # Compositor kiosk — una sola app Wayland en pantalla completa, no un
 # escritorio (ver docs/ROADMAP.md, Etapa 1).
 cage
+
+# epiphany usa XDG Desktop Portal (libportal, XdpPortal) para varias
+# cosas de su arranque normal (no solo diálogos opcionales). Necesita
+# DOS cosas que faltaban, encontradas en vivo con gdb (ver
+# likay-kiosk-start para la historia completa):
+#
+# 1. dbus-x11: sin ningún dbus corriendo, epiphany intenta autolaunch
+#    y aborta con "Failed to execute child process 'dbus-launch'".
+# 2. xdg-desktop-portal(-gtk): ya con dbus-x11 puesto, xdp_portal_new()
+#    seguía abortando (g_error fatal, "Failed to create XdpPortal
+#    instance") porque el SERVICIO de D-Bus org.freedesktop.portal.*
+#    no existía — dbus-x11 solo trae el bus en sí, no el daemon que
+#    debería responder ahí. xdg-desktop-portal-gtk es el backend real
+#    (sin backend, el portal existe pero no puede hacer nada).
+dbus-x11
+xdg-desktop-portal
+xdg-desktop-portal-gtk
 
 # Navegador para el kiosk: epiphany (GNOME Web), no chromium/chromium-browser
 # — en Ubuntu esos son paquetes transicionales que instalan el snap, y un
@@ -21,5 +49,61 @@ python3-pip
 build-essential
 
 # Usado por el hook que instala Ollama (baja su script/tarball oficial).
+# zstd: el instalador de Ollama lo necesita para extraer el tarball —
+# sin él falla en seco ("This version requires zstd for extraction"),
+# encontrado corriendo el build de verdad.
 curl
 ca-certificates
+zstd
+
+# Instalados acá, en la etapa chroot (que sí instala paquetes sin
+# problema), NO dejados para que los instale sola la etapa binary
+# (lb_binary_syslinux / lb_binary_iso): esta versión de live-build deja
+# genuinamente eliminado /usr/sbin/start-stop-daemon después del teardown
+# de la etapa chroot (bug real de su manejo de dpkg-divert en un sistema
+# con /sbin fusionado a /usr/sbin, como Ubuntu 26.04) — cualquier apt-get
+# que la etapa binary intente correr DESPUÉS de ese teardown falla con
+# "start-stop-daemon not found". Instalándolos acá, el Check_package de
+# cada script los ve ya instalados y se saltea su propio intento de
+# apt-get — evita el bug en vez de parchear los scripts de live-build.
+#
+# syslinux/syslinux-common: bootloader BIOS (ver auto/config sobre por
+# qué syslinux y no grub2 con --binary-images iso-hybrid).
+# syslinux-utils: trae "isohybrid", el binario que de verdad usa
+# lb_binary_iso para hacer el .iso booteable por USB — el propio
+# Check_package del script chequea el paquete "syslinux" en vez de
+# "syslinux-utils", que es el que realmente lo provee (encontrado al
+# 99% del build: genisoimage ya había escrito los 1786MB del ISO y falló
+# último, "isohybrid: not found").
+# librsvg2-bin: lo pide --syslinux-theme live-build.
+# genisoimage: arma el .iso en sí.
+genisoimage
+syslinux
+syslinux-common
+syslinux-utils
+librsvg2-bin
+
+# isolinux.bin en sí (el binario, no solo las utilidades de syslinux)
+# vive en un paquete separado llamado literalmente "isolinux". La
+# plantilla que trae esta versión de live-build
+# (/usr/share/live/build/bootloaders/isolinux/) tiene symlinks apuntando
+# a la ruta plana vieja /usr/lib/syslinux/isolinux.bin (de syslinux 4.x)
+# — hace años que el paquete real instala en /usr/lib/ISOLINUX/ en su
+# lugar, así que esos symlinks quedan colgando y el cp -aL (dereferencia
+# symlinks) de lb_binary_syslinux falla ("cannot stat"). El hook
+# 0500-fix-syslinux-paths.hook.chroot arma symlinks de compatibilidad en
+# la ruta vieja apuntando a donde el paquete real deja los archivos.
+isolinux
+
+# casper (el paquete real, no solo LB_INITRAMFS=casper — que solo
+# controla nombres de directorio/parámetro de boot en live-build, no
+# instala nada) NO se instalaba solo, y el mecanismo de live-build que
+# debería agregarlo automáticamente al ser "system live" está tan
+# desactualizado como todo lo demás en esta versión. Sin casper (ni su
+# dependencia initramfs-tools, tampoco instalada), el initrd se generó
+# con dracut — el generador que Ubuntu 26.04 usa por default — y dracut
+# no tiene ningún hook para el medio live de casper (boot=casper), así
+# que el arranque entraba en el "emergency mode" de dracut, sin
+# encontrar la raíz. casper depende de initramfs-tools, así que instala
+# ambos.
+casper

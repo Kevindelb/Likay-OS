@@ -1,0 +1,18 @@
+# boot=casper (no boot=live, el valor original de esta plantilla): el
+# sed que en teoría hace esta conversión (lb_binary_syslinux, rama
+# LB_INITRAMFS=casper) solo corre cuando live.cfg YA existe sin su .in
+# — nunca se dispara en un build de una sola pasada como el nuestro.
+# Con boot=live, casper no reconoce el parámetro, no encuentra el
+# medio live, y el arranque falla en loop (encontrado en QEMU: la
+# cuenta regresiva del menú se reiniciaba sola una y otra vez — en
+# realidad la VM entera estaba reiniciándose).
+label live-@FLAVOUR@
+	menu label ^Live (@FLAVOUR@)
+	menu default
+	kernel @KERNEL@
+	append initrd=@INITRD@ boot=casper config console=tty0 console=ttyS0,115200n8 @LB_BOOTAPPEND_LIVE@
+
+label live-@FLAVOUR@-failsafe
+	menu label ^Live (@FLAVOUR@ failsafe)
+	kernel @KERNEL@
+	append initrd=@INITRD@ boot=casper config console=tty0 console=ttyS0,115200n8 @LB_BOOTAPPEND_LIVE@ @LB_BOOTAPPEND_FAILSAFE@
