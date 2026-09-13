@@ -9,12 +9,29 @@ avanza a la siguiente hasta validar la actual en hardware real.
 Nada de esto es una arquitectura nueva por etapa — es el **mismo motor de
 seguridad que kal ya tiene y ya probó** (Access Manager: permisos
 explícitos, sandbox, auditoría con cadena verificable) ganando más
-"adaptadores" (tipos de recurso a mediar) y más "inquilinos" (kal mismo,
-o un agente de terceros migrado por el usuario). El criterio no cambia
-entre etapas: **nunca confiar en el código interno de un agente — solo en
-el límite que el sistema le impone desde afuera.** Eso ya es cierto hoy
-para las Skills de terceros en kal, y sigue siendo cierto para un agente
-completo alojado en Likay-OS.
+"adaptadores" (tipos de recurso a mediar) y más "inquilinos" (kal-in, el
+agente de referencia, o un agente de terceros que el usuario ya use hoy
+en el mercado). El criterio no cambia entre etapas: **nunca confiar en
+el código interno de un agente — solo en el límite que el sistema le
+impone desde afuera.** Eso ya es cierto hoy para las Skills de terceros
+en kal, y sigue siendo cierto para un agente completo alojado en
+Likay-OS — **incluso cuando el límite de seguridad choca con lo que ese
+agente "quiere" hacer.** Ante ese conflicto, gana siempre la seguridad,
+nunca la funcionalidad del agente montado — el usuario puede perder una
+capacidad puntual de un agente mal comportado; no puede perder la
+garantía de que el sistema le impuso un límite real.
+
+Desde septiembre de 2026, kal dejó de ser un solo repositorio híbrido:
+se separó en **kal** (el microkernel de seguridad puro — Access
+Manager, sandbox, audit log, registry, ResourceBroker, SDK; sin agente,
+sin LLM, sin ML — [github.com/carlosbv99-bit/kal](https://github.com/carlosbv99-bit/kal))
+y **kal-in** (el antiguo kal, renombrado — el agente de referencia que
+corre sobre ese kernel). Likay-OS monta siempre el kernel `kal`; el
+agente que corre arriba es intercambiable — kal-in es la opción por
+default y mejor probada, no una dependencia obligatoria. Cualquier
+agente de terceros que exponga lo que el Access Manager necesita para
+mediarlo (permisos explícitos, sin acceso directo sin pasar por el
+kernel) tiene que poder montarse igual.
 
 ## Decisión de fondo: por qué no un kernel desde cero (todavía)
 
@@ -36,22 +53,43 @@ como punto de partida.
 ## Etapa 1 — ISO live-boot
 
 **Entrega:** Likay-OS arranca directo desde un USB, sin tocar el disco
-real de la máquina — kal (backend + Ollama) arriba, interfaz en modo
-kiosk (pantalla completa, sin escritorio ni barra de tareas alrededor).
+real de la máquina — el kernel `kal` montado, un LLM propio y chico
+(`qwen2.5:3b`) siempre cargado para clasificación de intención y para
+orientar al usuario apenas arranca, capacidad de montar cualquier
+agente del mercado (kal-in como opción por default), y un kiosco
+propio — pantalla completa, sin escritorio ni barra de tareas
+alrededor, pensado para dar una experiencia empática y funcional al
+usuario, no un panel de chat de desarrollador.
 
 - **Base:** Debian/Ubuntu mínimo — a propósito, no Alpine. El stack de
-  kal (PyTorch/diffusers en particular) ya está probado sobre esa
+  kal-in (PyTorch/diffusers en particular) ya está probado sobre esa
   familia; Alpine usa musl en vez de glibc y suele dar problemas reales
   de compatibilidad con ese stack.
 - **Fortaleza de seguridad:** cero riesgo de por sí — completamente
   reversible (sacar el USB devuelve la máquina a su estado original),
   base mínima reduce superficie (menos paquetes instalados, menos CVEs
   potenciales) frente a un escritorio completo.
-- **A vigilar:** kal y Ollama arrancan como servicios de red desde el
-  boot mismo, sin que el usuario los "abra" a mano — hay que confirmar
-  que el binding a loopback (127.0.0.1) y el token administrativo que
-  kal ya tiene se preserven exactos en este contexto nuevo, nunca
-  asumir que se heredan solos.
+- **El LLM propio de Likay-OS, separado del LLM del agente montado:**
+  `qwen2.5:3b` es chico a propósito (clasificar intención y guiar al
+  usuario en el arranque no necesita un modelo grande) y es parte del
+  *sistema operativo*, no del agente — se hornea en la ISO igual que
+  cualquier otro servicio de Likay-OS. Cuando el trabajo real lo pide,
+  Likay-OS usa el LLM que el agente montado tenga configurado (el
+  propio, o uno en la nube) — nunca fuerza a un agente de terceros a
+  pasar por `qwen2.5:3b` para su propio trabajo, ese modelo es
+  exclusivamente la capa de Likay-OS.
+- **Kernel siempre presente, agente intercambiable:** el Access Manager
+  media los recursos del agente que esté montado — sea kal-in o un
+  agente de terceros — de la misma forma. Ningún agente monta el
+  sistema sin pasar por ese límite; eso es lo único no negociable de
+  esta etapa (ver el principio de arriba).
+- **A vigilar:** el kernel, el LLM propio, y el agente montado arrancan
+  como servicios de red desde el boot mismo, sin que el usuario los
+  "abra" a mano — hay que confirmar que el binding a loopback
+  (127.0.0.1) y cualquier token administrativo se preserven exactos en
+  este contexto nuevo, nunca asumir que se heredan solos. Esto ya se
+  verificó para kal-in corriendo solo; falta re-verificar una vez que
+  haya más de un servicio de red conviviendo (LLM propio + agente).
 
 ## Etapa 2 — Instalador real para dual-boot
 
@@ -111,11 +149,11 @@ el usuario — mediado por el mismo motor que hoy media filesystem y red.
   de apps soportadas.
 - **Riesgo nuevo:** typosquatting de paquetes — un nombre de paquete
   parecido a uno real pero malicioso (mismo patrón de ataque ya visto y
-  mitigado en kal para `pip install`).
+  mitigado en kal-in para `pip install`).
 - **Mitigación:** fuentes confiables por defecto (repositorios oficiales
   de Debian/Ubuntu, Flathub verificado), deny-by-default para cualquier
-  otra fuente — mismo criterio que ya usa kal para dominios permitidos
-  en su herramienta de navegación/descarga.
+  otra fuente — mismo criterio que ya usa kal-in para dominios
+  permitidos en su herramienta de navegación/descarga.
 - **Decisión de diseño explícita:** instalar software con privilegios de
   sistema es una acción más poderosa que escribir un archivo dentro de
   un workspace — nunca debería auto-permitirse por defecto (a
@@ -133,7 +171,7 @@ Likay-OS gestiona.
 
 - **Por qué hace falta esta etapa y no antes:** de las categorías de uso
   reales (programación, administración de empresa, diseño/video), la
-  gran mayoría ya se resuelve con lo que kal tiene hoy — herramientas
+  gran mayoría ya se resuelve con lo que kal-in tiene hoy — herramientas
   CLI/API para programación, la herramienta de navegación web ya
   construida para SaaS/Office 365/etc. Solo el diseño/video con apps de
   escritorio puras, sin equivalente API o web razonable, necesita esta
@@ -161,5 +199,13 @@ Likay-OS gestiona.
 
 ## Estado actual
 
-Ninguna etapa está implementada todavía — este documento es el plan
-acordado antes de escribir la primera línea de código de Likay-OS.
+Etapa 1, parcial: el pipeline de arranque en sí (BIOS → casper →
+systemd → un backend en 127.0.0.1 → kiosco Wayland en pantalla
+completa) ya está probado de punta a punta en QEMU (ver
+[`iso/README.md`](../iso/README.md)). Lo que corre hoy en ese kiosco
+es el chat de kal-in directo — un prototipo que validó la
+infraestructura de boot (independiente de qué agente corra encima),
+pero no el diseño final: todavía falta hornear `qwen2.5:3b` como capa
+propia de Likay-OS, definir la interfaz genérica para montar cualquier
+agente (hoy el ISO asume kal-in a mano, sin esa capa), y diseñar el
+kiosco nuevo. Ninguna otra etapa está implementada.
