@@ -17,7 +17,20 @@ Visión a largo plazo (no el plan inmediato): eventualmente, un kernel propio e 
 ## Documentación
 
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — las etapas del proyecto, en orden, con el análisis de seguridad de cada una (qué superficie nueva introduce, qué la mitiga).
+- [`iso/README.md`](iso/README.md) — cómo buildear y probar la ISO live-boot de Etapa 1.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — cómo contribuir.
+
+## Estado actual
+
+Etapa 1 (ISO live-boot, sin persistencia) arranca de punta a punta en
+QEMU: BIOS → kal-backend → kiosco de chat, probado sin modelo horneado
+todavía (ver [`iso/README.md`](iso/README.md#estado-actual-sin-modelo-horneado)).
+Sin probar en hardware real todavía.
 
 ## Relación con kal
 
 Este es un repositorio **separado** — el proyecto kal original sigue su curso propio, sin cambios, en su propio repositorio. Likay-OS es una iniciativa aditiva que construye sobre lo que kal ya validó, no un reemplazo.
+
+## Licencia
+
+[Apache License 2.0](LICENSE).
