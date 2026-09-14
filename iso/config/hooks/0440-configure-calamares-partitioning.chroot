@@ -1,0 +1,95 @@
+#!/bin/bash
+set -euo pipefail
+
+# Primer esquema de particionado real de Etapa 2 (ver docs/ROADMAP.md).
+# partition.conf vendorizado (calamares-settings-debian) no trae
+# partitionLayout activo -- el comportamiento por default de Calamares
+# es una sola partición raíz usando el 100% del disco, sin espacio
+# reservado para el agente que el usuario monte después.
+#
+# Layout:
+#   - root (/): ext4, LUKS2 (luksGeneration ya está en luks2 en
+#     partition.conf), 70% del disco, mínimo 20G -- suficiente para
+#     Debian mínimo + el stack de un agente tipo kal-in (PyTorch/
+#     diffusers, pesado -- ver docs/ROADMAP.md, Etapa 1).
+#   - likay-agent: ext4, LUKS2 TAMBIÉN (misma passphrase que root,
+#     Calamares maneja el desbloqueo de varios volúmenes LUKS con la
+#     misma clave vía crypttab) -- SIN mountPoint a propósito, para que
+#     Calamares la cree pero no la toque más: es la partición donde el
+#     usuario instala su propio agente después (kal-in u otro), issue
+#     #2 Fase 2, todavía sin diseñar el mecanismo exacto de montaje. Se
+#     cifra igual que root porque el roadmap ya establece que LUKS no
+#     es opcional en esta etapa justamente por los tokens/credenciales
+#     que un agente puede llegar a guardar ahí -- no hay razón para
+#     dejarla sin cifrar solo porque todavía no se diseñó cómo se usa.
+#     30% del disco, mínimo 10G -- tamaño placeholder, sin datos de uso
+#     real todavía, fácil de ajustar después.
+#
+# No se toca el ESP (efi: más arriba en este mismo archivo) -- Calamares
+# ya lo antepone solo cuando hace falta (UEFI), y esta ISO sigue siendo
+# BIOS/legacy vía syslinux (ver issue #6, gap de UEFI, fuera de alcance
+# acá).
+#
+# EFI-o-no: como no hay UEFI en Etapa 1/2 todavía, no hace falta ESP.
+PARTITION_CONF=/etc/calamares/modules/partition.conf
+WELCOME_CONF=/etc/calamares/modules/welcome.conf
+
+for f in "${PARTITION_CONF}" "${WELCOME_CONF}"; do
+    if ! [ -f "${f}" ]; then
+        echo "0440: no existe ${f} -- ¿corrió el rsync de vendor/calamares-settings-debian en auto/build?" >&2
+        exit 1
+    fi
+done
+
+python3 - "${PARTITION_CONF}" "${WELCOME_CONF}" <<'PYEOF'
+import sys
+
+partition_path, welcome_path = sys.argv[1], sys.argv[2]
+
+# --- partition.conf: agregar partitionLayout ---
+LAYOUT_MARKER = "# likay-partition-layout-v1"
+LAYOUT_BLOCK = f'''
+
+{LAYOUT_MARKER}
+partitionLayout:
+    - name: "root"
+      filesystem: "ext4"
+      noEncrypt: false
+      mountPoint: "/"
+      size: 70%
+      minSize: 20G
+    - name: "likay-agent"
+      filesystem: "ext4"
+      noEncrypt: false
+      size: 30%
+      minSize: 10G
+'''
+
+with open(partition_path) as f:
+    content = f.read()
+
+if LAYOUT_MARKER in content:
+    print("0440: partitionLayout ya estaba agregado (build anterior) -- nada que hacer en partition.conf.")
+else:
+    with open(partition_path, "a") as f:
+        f.write(LAYOUT_BLOCK)
+    print("0440: partitionLayout agregado a partition.conf (root 70%/min 20G + likay-agent 30%/min 10G, ambas LUKS2).")
+
+# --- welcome.conf: requiredStorage 15 -> 30 (root+agente combinados) ---
+old_line = "    requiredStorage:    15\n"
+new_line = "    requiredStorage:    30\n"
+
+with open(welcome_path) as f:
+    wcontent = f.read()
+
+if new_line in wcontent:
+    print("0440: requiredStorage ya estaba en 30 (build anterior) -- nada que hacer en welcome.conf.")
+elif old_line in wcontent:
+    wcontent = wcontent.replace(old_line, new_line, 1)
+    with open(welcome_path, "w") as f:
+        f.write(wcontent)
+    print("0440: requiredStorage subido de 15 a 30 GiB en welcome.conf (root 20G + likay-agent 10G mínimos).")
+else:
+    print(f"0440: no se encontró '{old_line.strip()}' en {welcome_path} -- ¿cambió el vendorizado? Revisar a mano.", file=sys.stderr)
+    sys.exit(1)
+PYEOF
