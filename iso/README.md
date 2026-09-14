@@ -100,6 +100,49 @@ la consola serie (`-serial file:log.txt` o `-serial stdio`), o
 `chpasswd` en un hook temporal como se hizo durante el desarrollo (no
 lo dejes en un commit).
 
+### Probar el modo instalador (`likay.mode=installer`)
+
+El menú de arranque tiene 5 segundos de timeout, muy poco para
+interactuar a mano de forma confiable en pruebas automatizadas —
+mejor arrancar directo con el kernel/initrd extraídos del propio
+`.iso` (sin mount, sin root):
+
+```bash
+xorriso -osirrox on -indev binary.hybrid.iso \
+  -extract /live/vmlinuz /tmp/vmlinuz \
+  -extract /live/initrd.img /tmp/initrd.img
+
+qemu-system-x86_64 \
+  -enable-kvm -cpu host -smp 4 -m 4096 \
+  -device virtio-rng-pci -usb -device usb-tablet \
+  -cdrom binary.hybrid.iso \
+  -drive file=/tmp/disco-de-prueba.qcow2,if=virtio,format=qcow2 \
+  -kernel /tmp/vmlinuz -initrd /tmp/initrd.img \
+  -append "boot=casper config console=tty0 console=ttyS0,115200n8 likay.mode=installer" \
+  -vnc :5
+```
+
+(`qemu-img create -f qcow2 /tmp/disco-de-prueba.qcow2 40G` para el
+disco descartable — nunca toca el disco real del host.)
+
+Para clickear la UI de Calamares sin cabeza: `-vnc :N` en vez de
+`-display none` — `mouse_move`/`mouse_button` del monitor HMP
+**no funcionan de forma confiable** con `-display none` aunque
+`info mice` muestre el puntero activo (probado, descartado). Con VNC
+sí funciona, vía [`vncdotool`](https://pypi.org/project/vncdotool/)
+(`pip install vncdotool` en un venv descartable, no hace falta sudo):
+
+```bash
+vncdotool -s localhost:5 move 1007 672 click 1   # mover Y clickear
+                                                   # en la MISMA llamada
+vncdotool -s localhost:5 capture screenshot.png
+```
+
+Ojo: cada invocación de `vncdotool` es una conexión nueva, el cursor
+arranca en el origen — siempre encadenar `move` justo antes de
+`click` en la misma llamada, no asumir que la posición persiste entre
+llamadas separadas.
+
 ## Estado actual
 
 Confirmado arrancando de punta a punta, en QEMU y en hardware real
@@ -170,22 +213,35 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     innecesaria mientras hay acceso privilegiado al disco de por
     medio. Ahora tienen la misma `ConditionKernelCommandLine` que
     `likay-kiosk.service`.
-- **Particionado — primer esquema, confirmado en QEMU con un disco
-  virtual real conectado (2026-09-14):** `root` (/, ext4, LUKS2, 70%
-  del disco, mínimo 20G) + `likay-agent` (ext4, LUKS2, sin
-  `mountPoint` a propósito — Calamares la crea pero no la toca más, es
-  donde el usuario instala su propio agente después, issue #2 Fase 2,
-  mecanismo de montaje todavía sin diseñar; se cifra igual que root
-  porque el roadmap ya exige LUKS en esta etapa justo por los
-  tokens/credenciales que un agente puede guardar ahí). Sin ESP —
+- **Particionado — primer esquema, confirmado visualmente de punta a
+  punta en QEMU con un disco virtual real conectado (2026-09-14):**
+  `root` (/, ext4, tamaño fijo 20G) + `likay-agent` (ext4, `size: 100%`
+  — "lo que quede" — + `minSize: 10G`, sin `mountPoint` a propósito —
+  Calamares la crea pero no la toca más, es donde el usuario instala su
+  propio agente después, issue #2 Fase 2, mecanismo de montaje todavía
+  sin diseñar). Ambas LUKS2, misma passphrase compartida vía crypttab
+  — el roadmap ya exige LUKS en esta etapa justo por los
+  tokens/credenciales que un agente puede guardar ahí. Sin ESP —
   Calamares lo antepone solo si hace falta UEFI, y seguimos BIOS/
   legacy (issue #6). Tamaños son placeholder, ajustables. Configurado
-  vía nuevo hook `0440-configure-calamares-partitioning.chroot`.
-  Confirmado: con un disco virtual de 40G conectado (ninguno real, no
-  toca el disco del host), la pantalla de bienvenida deja de quejarse
-  de espacio y Calamares arranca sin errores con el layout nuevo — no
-  se pudo confirmar visualmente la pantalla de particiones en sí (el
-  mouse headless de la VM de prueba no coopera, ver más abajo).
+  vía hook `0440-configure-calamares-partitioning.chroot`.
+  - **Bug real en el camino:** la primera versión usaba `size: 70%` +
+    `size: 30%` (en teoría sumando el 100% del disco) — en un disco de
+    prueba de 40G, Calamares terminó proponiendo root=21G,
+    likay-agent=10G y **9G de "Free Space" sin asignar**. El propio
+    ejemplo de `partitionLayout` en `partition.conf` usa `size: 100%`
+    solo en la ÚLTIMA entrada de la lista (osea "lo que quede", no
+    porcentajes independientes) — se seguió ese patrón documentado en
+    vez de inventar uno propio: root pasó a tamaño fijo, likay-agent a
+    `100%`.
+  - **Confirmado visualmente después del fix:** con el disco de 40G,
+    "Erase disk" ahora propone root=20GiB + likay-agent=20GiB, sin
+    nada de "Free Space" sobrante. Tildar "Encrypt system" y escribir
+    una passphrase cambia la etiqueta de ambas particiones de "ext4" a
+    **"LUKS2"**, con el check verde de confirmación — el diseño de
+    "una sola passphrase para las dos particiones" funciona tal cual
+    en la UI real, no solo en el YAML. No se completó una instalación
+    real (no hacía falta para esta validación).
   - **De los seis módulos de Debian que no venían instalados, tres se
     restauraron de verdad** (`dpkg-unsafe-io(-undo)` tal cual, y
     `bootloader-config` con una versión propia que hornea
@@ -215,8 +271,10 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     #1), no algo para decidir de paso acá.
   - Todavía sin conectar: dual-boot real (shrink de una partición
     NTFS/ext4 existente — soportado nativamente por el módulo
-    `partition` de Calamares, pero sin probar todavía), Secure
-    Boot/TPM. Ver `docs/ROADMAP.md`, Etapa 2.
+    `partition` de Calamares, y ya testeable de verdad ahora que el
+    click headless funciona — ver "Probar en QEMU" más arriba — pero
+    sin probar todavía), Secure Boot/TPM. Ver `docs/ROADMAP.md`,
+    Etapa 2.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 
