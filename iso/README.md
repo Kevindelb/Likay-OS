@@ -160,12 +160,9 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     commit anterior no era la causa real, solo coincidencia de
     mensaje). (3) `pkexec` es un paquete separado de `polkitd` —
     faltaba listarlo. (4) `settings.conf` vendorizado referencia seis
-    módulos custom de Debian que viven como código fuente compilado
-    aparte (`dpkg-unsafe-io(-undo)`, `sources-media(-unmount/-final)`,
-    `bootloader-config`) — sacados de la secuencia por ahora (hook
-    `0430-trim-calamares-sequence.chroot`), son ajustes específicos de
-    Debian que Likay-OS va a diseñar de nuevo para el particionado
-    real de todas formas.
+    módulos custom de Debian ("process", scripts de shell — no
+    binarios compilados como se asumió al principio) que no venían
+    instalados.
   - **Corregido de paso:** `kal-in-backend.service` y
     `ollama.service` (este último vía un drop-in, ya que su unidad la
     instala el script de Ollama, no es nuestra) arrancaban igual en
@@ -173,11 +170,40 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     innecesaria mientras hay acceso privilegiado al disco de por
     medio. Ahora tienen la misma `ConditionKernelCommandLine` que
     `likay-kiosk.service`.
-  - Todavía sin conectar (la VM de prueba no tenía disco): particionado
-    real sobre un disco de verdad (dual-boot con shrink de NTFS, LUKS,
-    partición para el agente), Secure Boot/TPM, y los seis módulos de
-    Debian recortados (o su reemplazo propio). Ver `docs/ROADMAP.md`,
-    Etapa 2.
+- **Particionado — primer esquema, confirmado en QEMU con un disco
+  virtual real conectado (2026-09-14):** `root` (/, ext4, LUKS2, 70%
+  del disco, mínimo 20G) + `likay-agent` (ext4, LUKS2, sin
+  `mountPoint` a propósito — Calamares la crea pero no la toca más, es
+  donde el usuario instala su propio agente después, issue #2 Fase 2,
+  mecanismo de montaje todavía sin diseñar; se cifra igual que root
+  porque el roadmap ya exige LUKS en esta etapa justo por los
+  tokens/credenciales que un agente puede guardar ahí). Sin ESP —
+  Calamares lo antepone solo si hace falta UEFI, y seguimos BIOS/
+  legacy (issue #6). Tamaños son placeholder, ajustables. Configurado
+  vía nuevo hook `0440-configure-calamares-partitioning.chroot`.
+  Confirmado: con un disco virtual de 40G conectado (ninguno real, no
+  toca el disco del host), la pantalla de bienvenida deja de quejarse
+  de espacio y Calamares arranca sin errores con el layout nuevo — no
+  se pudo confirmar visualmente la pantalla de particiones en sí (el
+  mouse headless de la VM de prueba no coopera, ver más abajo).
+  - **De los seis módulos de Debian que no venían instalados, tres se
+    restauraron de verdad** (`dpkg-unsafe-io(-undo)` tal cual, y
+    `bootloader-config` con una versión propia que hornea
+    `grub-pc`/`cryptsetup`/`cryptsetup-initramfs`/`keyutils` en el
+    medio live en vez de instalarlos en vivo por red durante el
+    install). **Los otros tres siguen afuera de la secuencia**
+    (`sources-media(-unmount)`, `sources-final`, hook
+    `0430-trim-calamares-sequence.chroot`) porque de verdad son
+    incompatibles, no solo "sin compilar": están hardcodeados a rutas
+    de montaje de live-build/live-boot que no existen en nuestro medio
+    basado en casper, y a Debian trixie/sus servidores de paquetes —
+    nosotros somos Ubuntu resolute. Necesitan una versión propia,
+    todavía sin escribir.
+  - Todavía sin conectar: dual-boot real (shrink de una partición
+    NTFS/ext4 existente — soportado nativamente por el módulo
+    `partition` de Calamares, pero sin probar todavía), Secure
+    Boot/TPM, y el reemplazo propio de `sources-media`/`sources-final`.
+    Ver `docs/ROADMAP.md`, Etapa 2.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 
