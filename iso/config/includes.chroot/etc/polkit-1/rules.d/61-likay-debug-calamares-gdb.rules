@@ -1,0 +1,11 @@
+// TEMPORAL -- ver com.likay.debug.calamares-gdb.policy. Autoriza al
+// mismo usuario likay-installer (mismo razonamiento que
+// 60-likay-installer.rules) a correr el wrapper de gdb en vez de
+// Calamares directo. Revertir junto con el resto de este cambio de
+// diagnóstico.
+polkit.addRule(function(action, subject) {
+    if (action.id == "com.likay.debug.calamares-gdb.pkexec.run" &&
+        subject.user == "likay-installer") {
+        return polkit.Result.YES;
+    }
+});

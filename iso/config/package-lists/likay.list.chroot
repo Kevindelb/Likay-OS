@@ -149,3 +149,9 @@ grub-pc
 cryptsetup
 cryptsetup-initramfs
 keyutils
+
+# DEBUG TEMPORAL (2026-09-14): para capturar el backtrace del crash de
+# Calamares en "Replace a partition" (ver installer-launcher). Sacar
+# de acá una vez conseguido el backtrace -- gdb no tiene por qué
+# quedar en un build normal.
+gdb
