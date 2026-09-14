@@ -130,42 +130,54 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
   a fallar sin red. Para hornear también ese modelo, agregar su tag a
   `model-cache/` (mismo mecanismo de hardlinks que ya usa `qwen2.5:3b`)
   o resolverlo como su propio paso — no es parte de esta etapa todavía.
-- **Instalador de Etapa 2 — trabajo en curso, pendiente de re-probar en
-  QEMU:** una segunda entrada de arranque ("Instalar Likay-OS",
-  `config/bootloaders/isolinux/install.cfg.in`) agrega
-  `likay.mode=installer` a la línea de kernel, lo único que decide si
-  el arranque sigue por `likay-kiosk.service` (Wayland/cage) o por
-  `likay-installer.service` (Xorg mínimo + Calamares) — nunca ambos.
-  Confirmado en QEMU: la elección de modo funciona bien (kernel
-  command line correcto, `likay-kiosk.service` se saltea solo en modo
-  instalador). Calamares corre como el usuario de sistema estático
-  `likay-installer`, autorizado a escalar a root vía una regla de
-  PolicyKit propia (`etc/polkit-1/rules.d/60-likay-installer.rules`)
-  — reemplaza el `auth_admin` por defecto de Calamares porque el medio
-  live no tiene ninguna cuenta administrativa humana. Vendorizado
+- **Instalador de Etapa 2 — mecanismo gráfico/de privilegios
+  confirmado en QEMU (2026-09-14):** una segunda entrada de arranque
+  ("Instalar Likay-OS", `config/bootloaders/isolinux/install.cfg.in`)
+  agrega `likay.mode=installer` a la línea de kernel, lo único que
+  decide si el arranque sigue por `likay-kiosk.service` (Wayland/cage)
+  o por `likay-installer.service` (Xorg mínimo + Calamares) — nunca
+  ambos. Confirmado de punta a punta: Xorg arranca bajo el usuario de
+  sistema estático `likay-installer`, `pkexec calamares` escala a root
+  **sin pedir contraseña** (regla de PolicyKit propia scoped a ese
+  usuario, `etc/polkit-1/rules.d/60-likay-installer.rules` — reemplaza
+  el `auth_admin` por defecto porque el medio live no tiene ninguna
+  cuenta administrativa humana), y la UI real de Calamares se ve
+  ("Welcome to the Calamares installer for Debian 14"). Vendorizado
   desde `calamares-settings-debian` (config oficial del Debian Live
   Team).
-  - **Bug real encontrado y corregido (2026-09-14):** la primera
-    versión usaba `DynamicUser=yes` para el usuario `likay-installer`
-    — la documentación de systemd dice explícito que eso fuerza
-    `NoNewPrivileges=yes` de forma no desactivable, lo que cuelga
-    `pkexec calamares` en silencio para siempre (confirmado en QEMU:
-    el arranque llegaba a "Started likay-installer.service" y no
-    avanzaba nunca más, sin ningún error visible). Corregido con un
-    usuario de sistema estático (`useradd -r`, hook
-    `0420-setup-installer.chroot`), mismo patrón que `kiosk`/`kal`/
-    `kal-in` — todavía sin re-confirmar en QEMU que el arreglo
-    funciona de punta a punta.
-  - **Corregido en el mismo hallazgo:** `kal-in-backend.service` y
+  - **Cuatro bugs reales encontrados y corregidos en el camino**
+    (cada uno confirmado en QEMU antes de pasar al siguiente): (1)
+    `DynamicUser=yes` para `likay-installer` fuerza
+    `NoNewPrivileges=yes` de forma no desactivable (documentación de
+    systemd) — colgaba `pkexec` en silencio para siempre; corregido
+    con un usuario de sistema estático (`useradd -r`, hook
+    `0420-setup-installer.chroot`), mismo patrón que
+    `kiosk`/`kal`/`kal-in`. (2) `Xorg.wrap` rechazaba el arranque
+    ("Only console users are allowed to run the X server") porque un
+    job de shell en segundo plano sin `stdin` explícito se redirige
+    solo a `/dev/null` por regla POSIX — corregido con `</dev/tty1`
+    explícito en `installer-launcher` (el cambio de VT2→VT1 de un
+    commit anterior no era la causa real, solo coincidencia de
+    mensaje). (3) `pkexec` es un paquete separado de `polkitd` —
+    faltaba listarlo. (4) `settings.conf` vendorizado referencia seis
+    módulos custom de Debian que viven como código fuente compilado
+    aparte (`dpkg-unsafe-io(-undo)`, `sources-media(-unmount/-final)`,
+    `bootloader-config`) — sacados de la secuencia por ahora (hook
+    `0430-trim-calamares-sequence.chroot`), son ajustes específicos de
+    Debian que Likay-OS va a diseñar de nuevo para el particionado
+    real de todas formas.
+  - **Corregido de paso:** `kal-in-backend.service` y
     `ollama.service` (este último vía un drop-in, ya que su unidad la
     instala el script de Ollama, no es nuestra) arrancaban igual en
     modo instalador — no era un camino hacia root, pero sí superficie
     innecesaria mientras hay acceso privilegiado al disco de por
     medio. Ahora tienen la misma `ConditionKernelCommandLine` que
     `likay-kiosk.service`.
-  - Todavía sin conectar: particionado real (dual-boot, LUKS,
-    partición para el agente), Secure Boot/TPM. Ver
-    `docs/ROADMAP.md`, Etapa 2.
+  - Todavía sin conectar (la VM de prueba no tenía disco): particionado
+    real sobre un disco de verdad (dual-boot con shrink de NTFS, LUKS,
+    partición para el agente), Secure Boot/TPM, y los seis módulos de
+    Debian recortados (o su reemplazo propio). Ver `docs/ROADMAP.md`,
+    Etapa 2.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 
