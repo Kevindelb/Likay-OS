@@ -57,12 +57,4 @@ xhost +si:localuser:root >/dev/null 2>&1 || true
 # autorización, scoped al usuario likay-installer específicamente (ver
 # ese archivo y docs/ROADMAP.md, Etapa 2, para el razonamiento
 # completo).
-#
-# DEBUG TEMPORAL (2026-09-14): para capturar el backtrace del crash en
-# "Replace a partition", se corre bajo gdb en vez de directo -- ver
-# com.likay.debug.calamares-gdb.policy /
-# usr/local/bin/likay-debug-calamares-gdb /
-# 61-likay-debug-calamares-gdb.rules. REVERTIR a "pkexec calamares"
-# una vez conseguido el backtrace, esto no debe quedar en un build
-# normal.
-pkexec /usr/local/bin/likay-debug-calamares-gdb
+pkexec calamares
