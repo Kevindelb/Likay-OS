@@ -5,21 +5,24 @@
   TEMPORAL, solo para diagnosticar el crash de Calamares en el flujo
   "Replace a partition" (ver docs/ROADMAP.md, Etapa 2, y
   iso/README.md). Mismo patrón que
-  com.github.calamares.calamares.policy (upstream) -- una acción
-  propia, separada, para no depender de la acción real de Calamares
-  (que pkexec resuelve por el path exacto del ejecutable, /usr/bin/
+  com.github.calamares.calamares.policy (upstream): una acción propia
+  y separada, para no depender de la acción real de Calamares (que
+  pkexec resuelve por el path exacto del ejecutable, /usr/bin/
   calamares, así que envolverlo con gdb no calificaría para esa
-  acción). No debería quedar en un build final -- revertir junto con
+  acción). No debería quedar en un build final: revertir junto con
   installer-launcher y 60-likay-installer.rules una vez conseguido el
-  backtrace.
+  backtrace. (Nota: un comentario XML anterior con doble guion adentro
+  rompía el parseo de este archivo entero, por eso pkexec caía siempre
+  al auth_admin genérico: ver el commit que corrigió esto.)
 -->
 <policyconfig>
   <vendor>Likay-OS (debug)</vendor>
+  <vendor_url>https://github.com/Kevindelb/Likay-OS</vendor_url>
+  <icon_name>drive-harddisk</icon_name>
 
   <action id="com.likay.debug.calamares-gdb.pkexec.run">
     <description>Run Installer under gdb (debug build)</description>
     <message>Authentication is required to run the installer under gdb</message>
-    <icon_name>drive-harddisk</icon_name>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
