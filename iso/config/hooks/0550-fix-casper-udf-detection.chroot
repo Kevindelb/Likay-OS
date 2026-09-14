@@ -1,0 +1,104 @@
+#!/bin/bash
+set -euo pipefail
+
+# Bug real de casper (paquete 26.04.2), encontrado y verificado en vivo
+# arrancando de verdad en QEMU, con acceso interactivo a la shell de
+# emergencia de initramfs tras el fallo:
+#
+#   mount: mounting /dev/loop0 on /filesystem.squashfs failed: Invalid argument
+#   Can not mount /dev/loop0 (/cdrom/casper/filesystem.squashfs) on /filesystem.squashfs
+#
+# Causa raíz: nuestra ISO es un híbrido ISO9660+UDF a propósito (ver
+# scripts/rebuild-iso-with-fixes.sh) porque filesystem.squashfs pesa más
+# de 4GiB una vez horneado el modelo — el campo de tamaño de un
+# directory record de ISO9660 es de 32 bits, así que cualquier archivo
+# >4GiB se ve con el tamaño mal representado (wrap de 32 bits) si se lee
+# vía ISO9660. UDF no tiene ese límite.
+#
+# get_fstype() (en /usr/share/initramfs-tools/scripts/casper-helpers)
+# decide qué filesystem usar para montar /cdrom así:
+#
+#   eval $(fstype < $1)              # herramienta "fstype", detección simple
+#   if [ "$FSTYPE" != "unknown" ]; then echo $FSTYPE; return 0; fi
+#   /sbin/blkid -s TYPE -o value $1  # blkid, más preciso, solo si lo anterior no supo
+#
+# "fstype" identifica nuestro disco como "iso9660" sin más (no reconoce
+# la parte UDF del híbrido) — como esto NO es "unknown", blkid JAMÁS
+# llega a correr. Confirmado en vivo: blkid -s TYPE -o value /dev/sr0
+# (corrido a mano en la shell de emergencia) sí devuelve "udf"
+# correctamente — el problema es que nunca se lo consulta.
+# Confirmado también que montando a mano con "-t udf" en vez de
+# "iso9660" el tamaño de filesystem.squashfs se ve perfecto (el real,
+# no el truncado) y el squashfs monta sin problema.
+#
+# El parche: si "fstype" dice "iso9660", chequeamos blkid como segunda
+# opinión — si blkid dice "udf" para el MISMO dispositivo (o sea, es un
+# híbrido de verdad, no un ISO9660 puro), preferimos "udf". Si blkid no
+# encuentra udf, se sigue exactamente el comportamiento original.
+CASPER_HELPERS=/usr/share/initramfs-tools/scripts/casper-helpers
+
+if ! grep -q '^get_fstype() {$' "${CASPER_HELPERS}"; then
+    echo "0550: no se encontró get_fstype() en ${CASPER_HELPERS} — ¿cambió el paquete casper? Revisar el parche a mano." >&2
+    exit 1
+fi
+
+python3 - "${CASPER_HELPERS}" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+old = '''get_fstype() {
+    local FSTYPE
+    local FSSIZE
+    eval $(fstype < $1)
+    if [ "$FSTYPE" != "unknown" ]; then
+        echo $FSTYPE
+        return 0
+    fi
+    /sbin/blkid -s TYPE -o value $1 2>/dev/null
+}'''
+
+new = '''get_fstype() {
+    local FSTYPE
+    local FSSIZE
+    eval $(fstype < $1)
+    if [ "$FSTYPE" = "iso9660" ]; then
+        # Ver 0550-fix-casper-udf-detection.chroot: discos híbridos
+        # ISO9660+UDF con un archivo >4GiB necesitan montarse como UDF,
+        # no ISO9660 (límite de 32 bits en el tamaño de archivo).
+        local UDF_CHECK
+        UDF_CHECK=$(/sbin/blkid -s TYPE -o value "$1" 2>/dev/null)
+        if [ "$UDF_CHECK" = "udf" ]; then
+            echo udf
+            return 0
+        fi
+    fi
+    if [ "$FSTYPE" != "unknown" ]; then
+        echo $FSTYPE
+        return 0
+    fi
+    /sbin/blkid -s TYPE -o value $1 2>/dev/null
+}'''
+
+with open(path) as f:
+    content = f.read()
+
+# Idempotente: chroot/ (y por lo tanto este archivo) se conserva entre
+# builds, y este hook corre en cada build (ver auto/build) — sin este
+# chequeo, la segunda corrida no encuentra el texto ORIGINAL (porque ya
+# quedó parcheado de la corrida anterior) y aborta creyendo que el
+# paquete casper cambió. Mismo motivo que el resto de los hooks
+# idempotentes de este proyecto (0300, 0400).
+if new in content:
+    print("0550: get_fstype() ya estaba parcheado (build anterior) — nada que hacer.")
+    sys.exit(0)
+
+if old not in content:
+    print(f"0550: el texto exacto de get_fstype() no matcheó en {path} — el paquete casper puede haber cambiado. Revisar el parche a mano.", file=sys.stderr)
+    sys.exit(1)
+
+content = content.replace(old, new, 1)
+with open(path, "w") as f:
+    f.write(content)
+
+print("0550: get_fstype() parcheado para preferir UDF en discos híbridos.")
+PYEOF

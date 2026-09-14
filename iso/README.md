@@ -44,10 +44,22 @@ model-cache/                       # cache de blobs de Ollama entre builds (giti
 ```bash
 cd iso
 sudo ./auto/build
+sudo ./scripts/rebuild-iso-with-fixes.sh
 ```
 
-Tarda varios minutos. Al final vas a tener `binary.hybrid.iso` en esta
-carpeta — booteable tanto por USB (`dd`) como en una VM.
+**Dos comandos, no uno** — `scripts/rebuild-iso-with-fixes.sh` arregla
+dos bugs reales de `lb_binary_iso` (ver "Cosas raras" más abajo) que
+dejan el `.iso` sin arrancar aunque el build "termine bien". Antes
+estaba encadenado automáticamente al final de `auto/build`, pero
+encadenado así, simplemente no aplicaba su propio arreglo — sin ningún
+error visible, confirmado en vivo varias veces con timestamps. Corrido
+como comando aparte, en cambio, siempre funcionó. No se encontró la
+causa de fondo; se lo dejó como paso manual porque es el que
+realmente funciona.
+
+Tarda varios minutos (la mayor parte en `auto/build`). Al final vas a
+tener `binary.hybrid.iso` en esta carpeta — booteable tanto por USB
+(`dd`) como en una VM.
 
 `chroot/` se conserva entre builds a propósito (así no hay que
 reinstalar Python/kal/cage desde cero en cada iteración) — pero

@@ -8,13 +8,31 @@ fi
 
 chmod 0755 /usr/local/bin/likay-kiosk-start
 
+chmod 0755 /opt/likay/smoke-test/app.py
+
 # `systemctl enable` acá solo escribe los symlinks de [Install] — no hace
 # falta un systemd corriendo de verdad dentro del chroot para esto.
-# ollama.service condicional: en esta prueba puntual sacamos Ollama del
-# build (ver docs de la etapa — squashfs >4GB), así que el unit ni
-# existe todavía.
+# ollama.service condicional: solo existe si el hook 0100 instaló Ollama
+# de verdad (algunos builds de prueba lo sacan a propósito).
 if [ -e /etc/systemd/system/ollama.service ]; then
     systemctl enable ollama.service
 fi
-systemctl enable kal-backend.service
+
+# kal-backend.service (agent_core.orchestrator:app) quedó roto por el
+# split kal/kal-in — vendor/kal ahora es el kernel puro, sin agente. NO
+# se habilita hasta que exista la interfaz genérica para montar un
+# agente (ver docs/ROADMAP.md) o se vendorice kal-in como dependencia
+# aparte. Mientras tanto, likay-smoke-test.service ocupa el :8000 con
+# una página descartable que solo confirma que el LLM propio de
+# Likay-OS (qwen2.5:3b vía Ollama) arrancó bien.
+#
+# disable explícito, no solo "no lo habilito": chroot/ se conserva
+# entre builds a propósito, y kal-backend.service SÍ estuvo habilitado
+# en corridas de antes del split — sin este disable, ese symlink viejo
+# en multi-user.target.wants/ sigue ahí y el servicio arranca igual,
+# compitiendo por el :8000 con likay-smoke-test.service (encontrado en
+# vivo: uvicorn crasheando con "ModuleNotFoundError: No module named
+# 'agent_core'" en el boot, pese a que este hook nunca lo habilita).
+systemctl disable kal-backend.service 2>/dev/null || true
+systemctl enable likay-smoke-test.service
 systemctl enable likay-kiosk.service

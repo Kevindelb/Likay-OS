@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Likay-OS</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1>likay<span class="dim">-os</span></h1>
+    <p class="tagline">Sistema operativo para agentes de IA</p>
+
+    <div class="card">
+      <div class="row">
+        <span class="dot" id="dot-ollama"></span>
+        <span>LLM propio (<code id="model-tag">…</code>)</span>
+        <span class="state" id="state-ollama">chequeando…</span>
+      </div>
+      <div class="row">
+        <span class="dot" id="dot-loaded"></span>
+        <span>Modelo cargado en memoria</span>
+        <span class="state" id="state-loaded">chequeando…</span>
+      </div>
+    </div>
+
+    <p class="note">
+      Esta es una pantalla de verificación, no el kiosco final — confirma
+      que el LLM propio de Likay-OS arrancó bien antes de hornear la ISO
+      completa. El kiosco de verdad todavía está por diseñarse
+      (docs/ROADMAP.md, Etapa 1).
+    </p>
+  </main>
+
+  <script>
+    async function refresh() {
+      try {
+        const r = await fetch("/api/status");
+        const s = await r.json();
+        document.getElementById("model-tag").textContent = s.model_tag;
+
+        setState("ollama", s.ollama_reachable, s.ollama_reachable ? "arriba" : "sin responder");
+        setState("loaded", s.model_loaded, s.model_loaded ? "sí" : (s.model_present ? "no todavía" : "no está bajado"));
+      } catch (e) {
+        setState("ollama", false, "error de red");
+      }
+    }
+    function setState(id, ok, text) {
+      document.getElementById("dot-" + id).className = "dot " + (ok ? "ok" : "bad");
+      document.getElementById("state-" + id).textContent = text;
+    }
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>

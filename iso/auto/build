@@ -170,4 +170,20 @@ lb build noauto "${@}" 2>&1 | tee build.log
 # UDF) — ver el comentario completo en scripts/rebuild-iso-with-fixes.sh.
 # Ninguna de las dos se nota en el build en sí (termina "bien"), solo
 # arrancando la ISO de verdad.
-scripts/rebuild-iso-with-fixes.sh
+#
+# ESE SCRIPT YA NO SE LLAMA ACÁ AUTOMÁTICAMENTE — se probó (tres veces,
+# en vivo) y encadenado así simplemente no aplicaba su propio arreglo
+# (confirmado con timestamps: binary/live quedaba con la marca de
+# tiempo de ANTES de `lb build`, sin tocar — ni un error visible, ni
+# siquiera con el código de salida de `lb build` capturado a mano y
+# confirmado en 0). Corrido como comando SEPARADO, en cambio, funcionó
+# perfecto las tres veces que se probó así. No se encontró la causa de
+# fondo de por qué encadenado falla — en vez de seguir persiguiéndola,
+# se lo dejó como un paso manual explícito, que es el que de verdad
+# funciona. Ver iso/README.md, sección "Build".
+echo "=================================================================="
+echo "==> lb build terminó. Ahora corré, como paso aparte:"
+echo "==>     sudo ./scripts/rebuild-iso-with-fixes.sh"
+echo "==> (encadenarlo automáticamente acá no es confiable — ver el"
+echo "==> comentario en este mismo archivo)."
+echo "=================================================================="

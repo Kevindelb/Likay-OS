@@ -1,0 +1,23 @@
+[Unit]
+Description=Likay-OS smoke test page (placeholder, no es el kiosco real)
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+# Nadie de verdad necesita ser dueño de esto — solo lee /etc/likay-os/
+# model.conf y le pega a la API HTTP local de Ollama. DynamicUser=yes
+# (no User=nobody: systemd avisa "Special user nobody configured, this
+# is not safe!" — nobody es una cuenta compartida por convención con
+# todo lo demás sin dueño claro en el sistema; DynamicUser=yes crea una
+# cuenta efímera propia de este servicio, mismo mínimo privilegio sin
+# ese problema).
+DynamicUser=yes
+ExecStart=/usr/bin/python3 /opt/likay/smoke-test/app.py
+Restart=always
+RestartSec=2
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
