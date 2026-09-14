@@ -4,3 +4,6 @@
 [submodule "vendor/kal-in"]
 	path = vendor/kal-in
 	url = https://github.com/carlosbv99-bit/kal-in.git
+[submodule "vendor/calamares-settings-debian"]
+	path = vendor/calamares-settings-debian
+	url = https://salsa.debian.org/live-team/calamares-settings-debian.git
