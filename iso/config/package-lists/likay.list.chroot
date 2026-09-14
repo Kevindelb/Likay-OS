@@ -133,3 +133,19 @@ x11-xserver-utils
 # no el binario cliente).
 polkitd
 pkexec
+
+# Bootloader e infra de LUKS para el SISTEMA INSTALADO por Calamares
+# (no para arrancar esta ISO, que sigue usando syslinux/isolinux —
+# esto es lo que necesita el disco de destino). Se hornean acá, en el
+# propio medio live, en vez de instalarse en vivo durante el install
+# (que necesitaría red) — Calamares instala copiando el squashfs que
+# está corriendo ahora mismo (unpackfs), así que lo que esté acá ya
+# queda en el sistema destino. Ver
+# usr/share/calamares/helpers/calamares-bootloader-config (nuestra
+# versión adaptada, no la de calamares-settings-debian, que sí hace
+# apt-get en vivo). grub-efi queda pendiente (issue #6, UEFI todavía
+# no soportado) — solo grub-pc (BIOS/legacy) por ahora.
+grub-pc
+cryptsetup
+cryptsetup-initramfs
+keyutils

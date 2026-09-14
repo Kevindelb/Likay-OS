@@ -3,26 +3,33 @@ set -euo pipefail
 
 # Probado en QEMU (2026-09-14): con Xorg + pkexec ya funcionando,
 # Calamares fallaba al arrancar (CalamaresApplication::initFailed)
-# porque settings.conf (vendorizado de calamares-settings-debian, ver
-# vendor/calamares-settings-debian/calamares/settings.conf) referencia
-# seis módulos CUSTOM de Debian que viven como código fuente compilado
-# aparte (calamares-modules/ en ese mismo repo, NO vendorizado a
-# propósito -- ver el comentario en auto/build) y que Calamares carga
-# de forma obligatoria al iniciar, aunque solo se usen en la fase
-# "exec" (instalación real), nunca en la fase "show" (UI):
+# porque settings.conf (vendorizado de calamares-settings-debian)
+# referencia seis módulos custom de Debian que no venían instalados.
+# Investigado más a fondo (mismo día): los seis son módulos tipo
+# "process" -- scripts de shell, NO binarios compilados como se asumió
+# al principio (ver vendor/calamares-settings-debian/calamares-modules/
+# */module.desc, campo interface: "process"). Tres de ellos
+# (dpkg-unsafe-io, dpkg-unsafe-io-undo, bootloader-config, adaptado) ya
+# se restauraron de verdad -- ver
+# config/includes.chroot/usr/lib/x86_64-linux-gnu/calamares/modules/ y
+# config/includes.chroot/usr/share/calamares/helpers/.
 #
-#   dpkg-unsafe-io, dpkg-unsafe-io-undo, sources-media,
-#   sources-media-unmount, sources-final, bootloader-config
-#
-# Estos módulos hacen optimizaciones y ajustes de fuentes apt
-# específicos de Debian (desactivar fsync durante dpkg, apuntar a los
-# repos del medio live en vez de a internet, etc.) que Likay-OS va a
-# necesitar diseñar de nuevo de todas formas cuando se implemente el
-# particionado real (ver docs/ROADMAP.md, Etapa 2) -- no tiene sentido
-# compilar los módulos de Debian tal cual ahora solo para validar que
-# Xorg/Calamares arrancan. Se los saca de la secuencia por ahora; la
-# fase "show" (welcome/locale/keyboard/partition/users/summary, lo
-# único que hace falta para esta validación) no los necesita.
+# Los tres que quedan afuera acá SÍ son genuinamente incompatibles, no
+# solo "no compilados": están hardcodeados a rutas de montaje de
+# live-build/live-boot (/run/live/medium, /run/initramfs/live) que no
+# existen en nuestro medio live basado en casper (el nuestro monta en
+# /cdrom), y a RELEASE="trixie" + los servidores de paquetes de Debian
+# (deb.debian.org) -- nosotros somos Ubuntu resolute (ver
+# iso/auto/config, --distribution resolute), no Debian. Restaurarlos
+# tal cual rompería el apt del sistema instalado, no solo sería
+# cosmético. Necesitan una versión propia de Likay-OS (que sepa de
+# casper y apunte a los repos de Ubuntu) -- todavía no escrita, ver
+# docs/ROADMAP.md, Etapa 2.
+SEQUENCE_INCOMPATIBLE_MODULES=(
+    sources-media
+    sources-media-unmount
+    sources-final
+)
 SETTINGS=/etc/calamares/settings.conf
 
 if ! [ -f "${SETTINGS}" ]; then
@@ -30,18 +37,11 @@ if ! [ -f "${SETTINGS}" ]; then
     exit 1
 fi
 
-python3 - "${SETTINGS}" <<'PYEOF'
+python3 - "${SETTINGS}" "${SEQUENCE_INCOMPATIBLE_MODULES[@]}" <<'PYEOF'
 import sys
 
 path = sys.argv[1]
-missing_modules = [
-    "dpkg-unsafe-io",
-    "sources-media",
-    "bootloader-config",
-    "dpkg-unsafe-io-undo",
-    "sources-media-unmount",
-    "sources-final",
-]
+missing_modules = sys.argv[2:]
 
 with open(path) as f:
     content = f.read()
@@ -56,7 +56,7 @@ for name in missing_modules:
 if removed:
     with open(path, "w") as f:
         f.write(content)
-    print(f"0430: sacados de la secuencia (no compilados todavía): {', '.join(removed)}")
+    print(f"0430: sacados de la secuencia (rutas/repos de Debian live-build, no aplican a casper/Ubuntu): {', '.join(removed)}")
 else:
     print("0430: ningún módulo de la lista estaba en settings.conf (build anterior ya parcheado, o cambió el vendorizado) -- nada que hacer.")
 PYEOF

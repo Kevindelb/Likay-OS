@@ -1,0 +1,42 @@
+#!/bin/bash
+# Adaptado del calamares-bootloader-config de calamares-settings-debian
+# (vendor/calamares-settings-debian/helpers/calamares-bootloader-config)
+# -- NO copiado tal cual a propósito. El original hace
+# `apt-get install grub-pc/grub-efi cryptsetup-initramfs ...` DURANTE
+# la instalación, lo que requiere red. Likay-OS ya hornea esos paquetes
+# en el propio medio live (ver config/package-lists/likay.list.chroot)
+# -- como Calamares instala el sistema copiando el squashfs que está
+# corriendo ahora mismo (unpackfs), esos paquetes ya están en el
+# sistema destino sin necesitar apt ni red. Esta versión solo hace la
+# parte que sí depende del disco recién particionado: permisos del
+# initramfs para LUKS, reactivar os-prober, y correr update-grub.
+#
+# EFI queda sin probar (issue #6, esta ISO sigue siendo BIOS/legacy) --
+# la rama efi de abajo es la misma lógica que el original, sin
+# adaptar/probar todavía.
+set -eu
+
+CHROOT=$(mount | grep proc | grep calamares | awk '{print $3}' | sed -e "s#/proc##g")
+
+# Mismo motivo que el original: si el root instalado está sobre LUKS,
+# el initramfs va a contener el keyfile/config de desbloqueo -- que
+# tenga permisos world-readable sería un problema real de seguridad.
+# Se regenera el initramfs más adelante en la secuencia (initramfs.conf
+# ya está en settings.conf), así que acá solo se deja el snippet de
+# permisos.
+if [ "$(mount | grep "$CHROOT "  | cut -c -16)" = "/dev/mapper/luks" ]; then
+    echo "UMASK=0077" > "$CHROOT/etc/initramfs-tools/conf.d/initramfs-permissions"
+fi
+
+echo "likay-bootloader-config: corriendo..."
+
+if [ -d /sys/firmware/efi/efivars ]; then
+    echo " * UEFI detectado -- sin probar en Likay-OS todavía (issue #6)."
+else
+    echo " * BIOS/legacy (esperado en esta etapa)."
+fi
+
+# Re-habilitar os-prober para dual-boot (detecta otros sistemas
+# operativos ya instalados) -- mismo sed que el original.
+sed -i "s/#GRUB_DISABLE_OS_PROBER=false/# OS_PROBER re-habilitado por la instalación de Likay-OS:\nGRUB_DISABLE_OS_PROBER=false/g" "$CHROOT/etc/default/grub"
+chroot "$CHROOT" /usr/sbin/update-grub
