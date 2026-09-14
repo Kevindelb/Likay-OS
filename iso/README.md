@@ -2,8 +2,10 @@
 
 Esta carpeta arma la ISO de Etapa 1 del [roadmap](../docs/ROADMAP.md):
 un USB booteable (sin instalar nada, sin tocar el disco del host) que
-arranca directo a un kiosco de pantalla completa mostrando el chat de
-[kal](https://github.com/carlosbv99-bit/kal).
+arranca directo a un kiosco de pantalla completa, con el kernel
+[kal](https://github.com/carlosbv99-bit/kal) montado y el agente de
+referencia [kal-in](https://github.com/carlosbv99-bit/kal-in) corriendo
+arriba (ver "Estado actual" más abajo).
 
 Usa [live-build](https://salsa.debian.org/live-team/live-build) (la
 versión empaquetada por Ubuntu, `3.0~a57-1ubuntu54` al momento de
@@ -98,28 +100,35 @@ la consola serie (`-serial file:log.txt` o `-serial stdio`), o
 `chpasswd` en un hook temporal como se hizo durante el desarrollo (no
 lo dejes en un commit).
 
-## Estado actual: sin modelo horneado
+## Estado actual
 
-Los hooks `0100-install-ollama.chroot` y `0200-pull-ollama-model.chroot`
-están renombrados a `.disabled` — la ISO actual arranca el kiosco y
-`kal-backend`, pero sin Ollama instalado (el indicador "LLM" en la UI
-sale en rojo). Esto fue una decisión deliberada para aislar el pipeline
-de boot del problema de tamaño: un `filesystem.squashfs` con Ollama +
-un modelo de 4B pesa más de 4GiB, el límite de un archivo único en
-ISO9660 — `genisoimage`/casper no lo manejan bien (ver comentarios en
-`scripts/rebuild-iso-with-fixes.sh`).
+Confirmado arrancando de punta a punta, en QEMU y en hardware real
+(USB grabado con `dd`): kernel → `qwen2.5:3b` (LLM propio de Likay-OS,
+vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
 
-Para volver a habilitar el modelo:
-
-1. `mv config/hooks/0100-install-ollama.chroot.disabled config/hooks/0100-install-ollama.chroot`
-   (mismo para `0200`).
-2. Definir qué modelo hornear en `config/likay/model.conf` — candidato
-   fuerte: `qwen2.5:3b` en vez de `qwen3.5:4b-q4_K_M` (el modelo chico
-   que kal ya usa como clasificador de intención, siempre cargado —
-   ver `vendor/kal/agent_core/conversation_engine.py`), mucho más chico
-   y evita el problema de tamaño de entrada.
-3. Resolver el límite de 4GiB si igual hace falta un modelo más grande
-   (squashfs en capas separadas, o UDF real en vez del parche actual).
+- **LLM propio horneado:** `config/likay/model.conf` define
+  `qwen2.5:3b` — clasificación de intención + orientación al usuario
+  (ver `docs/ROADMAP.md`, Etapa 1), no el modelo de trabajo del agente.
+  El límite de 4GiB-1 de ISO9660 para un archivo único (que en su
+  momento obligó a probar sin modelo) está resuelto de raíz — ver
+  `0550-fix-casper-udf-detection.chroot` en "Cosas raras" más abajo.
+- **Agente montado — Fase 1 del issue [#2](https://github.com/Kevindelb/Likay-OS/issues/2):**
+  `vendor/kal-in` (el agente de referencia, sobre el kernel `vendor/kal`)
+  vendorizado y conectado a mano vía `kal-in-backend.service` — todavía
+  no existe una interfaz genérica para montar cualquier agente, eso
+  queda para cuando haya un segundo caso real que la justifique.
+  `kal-in` sigue trayendo su propio `kernel/`/`agent_core`/`frontend`
+  completos (la separación de código *adentro* de kal-in es trabajo
+  futuro de ese repo) — corre standalone, no depende de `vendor/kal`
+  todavía.
+- **Limitación conocida:** `kal-in` solo usa `qwen2.5:3b` para su
+  clasificador de intención (`conversation_engine`, ver
+  `vendor/kal-in/config/config.yaml`) — el modelo de trabajo real
+  (`llm.default_model`, por default `qwen3.5:4b-q4_K_M`) NO está
+  horneado. Pedirle a kal-in una tarea real que necesite ese modelo va
+  a fallar sin red. Para hornear también ese modelo, agregar su tag a
+  `model-cache/` (mismo mecanismo de hardlinks que ya usa `qwen2.5:3b`)
+  o resolverlo como su propio paso — no es parte de esta etapa todavía.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 

@@ -1,28 +1,28 @@
 [Unit]
-Description=kal backend (uvicorn / agent_core.orchestrator)
+Description=kal-in backend (uvicorn / agent_core.orchestrator) — agente de referencia sobre el kernel kal
 After=network.target ollama.service
 Wants=ollama.service
 
 [Service]
 Type=simple
-User=kal
-Group=kal
-WorkingDirectory=/opt/kal
+User=kal-in
+Group=kal-in
+WorkingDirectory=/opt/kal-in
 Environment=AGENT_ENV=production
-# --host 127.0.0.1, NO 0.0.0.0 como el Dockerfile de kal: ahí la
+# --host 127.0.0.1, NO 0.0.0.0 como el Dockerfile de kal-in: ahí la
 # restricción a loopback la hace el mapeo de puertos de Docker
 # (docker-compose.yml: "127.0.0.1:8000:8000"). Acá no hay esa capa —
 # bindear 0.0.0.0 en un live-boot expondría la API del agente (incluido
 # /self-modification/apply, protegido solo por el token admin como
 # segunda capa) a toda la LAN. Ver el hallazgo de seguridad documentado
-# en vendor/kal/utils/admin_token.py (2026-07-09).
-ExecStart=/opt/kal/.venv/bin/uvicorn agent_core.orchestrator:app --host 127.0.0.1 --port 8000
+# en vendor/kal-in/utils/admin_token.py (2026-07-09).
+ExecStart=/opt/kal-in/.venv/bin/uvicorn agent_core.orchestrator:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=2
 # Por default systemd solo manda esto al journal — sin acceso a
 # persistencia ni journalctl interactivo en la VM de prueba, no se veía
-# nada de por qué kal-backend no respondía. journal+console (mismo
-# patrón que likay-kiosk.service) lo saca por la consola/serial.
+# nada de por qué esto no respondía. journal+console (mismo patrón que
+# likay-kiosk.service) lo saca por la consola/serial.
 StandardOutput=journal+console
 StandardError=journal+console
 

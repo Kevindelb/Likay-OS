@@ -28,6 +28,7 @@ MODEL_CACHE_DIR="model-cache"
 CHROOT_MODELS_DIR="chroot/usr/share/ollama/.ollama/models"
 INCLUDES_MODELS_DIR="config/includes.chroot/usr/share/ollama/.ollama/models"
 INCLUDES_KAL_DIR="config/includes.chroot/opt/kal"
+INCLUDES_KAL_IN_DIR="config/includes.chroot/opt/kal-in"
 
 echo "==> Copiando vendor/kal a includes.chroot/opt/kal"
 mkdir -p "${INCLUDES_KAL_DIR}"
@@ -36,6 +37,21 @@ rsync -a --delete \
     --exclude='tests' \
     --exclude='vscode-extension' \
     "${REPO_ROOT}/vendor/kal/" "${INCLUDES_KAL_DIR}/"
+
+# vendor/kal-in: el agente de referencia (Fase 1 de "montar cualquier
+# agente", issue #2 — kal-in a mano primero, interfaz genérica recién
+# cuando haya un segundo caso real que la justifique). Kal-in todavía
+# trae su propio kernel/agent_core/frontend completos (la separación
+# de código adentro de kal-in en sí es trabajo futuro, según su propio
+# README) — corre standalone, no depende de vendor/kal para nada
+# todavía.
+echo "==> Copiando vendor/kal-in a includes.chroot/opt/kal-in"
+mkdir -p "${INCLUDES_KAL_IN_DIR}"
+rsync -a --delete \
+    --exclude='.git' \
+    --exclude='tests' \
+    --exclude='vscode-extension' \
+    "${REPO_ROOT}/vendor/kal-in/" "${INCLUDES_KAL_IN_DIR}/"
 
 echo "==> Copiando config/likay/model.conf a includes.chroot/etc/likay-os/"
 mkdir -p config/includes.chroot/etc/likay-os

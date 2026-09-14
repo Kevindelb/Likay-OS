@@ -20,10 +20,12 @@
 *.log
 
 # Contenido de includes.chroot que auto/build genera/copia en cada corrida
-# desde otras fuentes (vendor/kal, model-cache/, config/likay/model.conf)
-# — no es autoría a mano, no va versionado acá (evita además duplicar el
-# submódulo y, peor, comitear varios GB de blobs de modelo).
+# desde otras fuentes (vendor/kal, vendor/kal-in, model-cache/,
+# config/likay/model.conf) — no es autoría a mano, no va versionado acá
+# (evita además duplicar el submódulo y, peor, comitear varios GB de
+# blobs de modelo).
 config/includes.chroot/opt/kal/
+config/includes.chroot/opt/kal-in/
 config/includes.chroot/usr/share/ollama/
 config/includes.chroot/etc/likay-os/
 
@@ -32,3 +34,14 @@ config/includes.chroot/etc/likay-os/
 # (que `lb clean --chroot`, o cualquier rebuild del stage de chroot,
 # borra). Ver el hook 0200-pull-ollama-model.hook.chroot.
 model-cache/
+# Copia de side-grade de model-cache/ usada para probar el build sin
+# modelo (antes de resolver el bug de squashfs >4GiB) — quedó obsoleta,
+# se deja afuera del tracking en vez de borrarla.
+model-cache.disabled-for-test/
+
+# Manifiestos de paquetes que `lb build` deja en la raíz de iso/ en
+# builds recientes (listas planas nombre+versión de todo lo instalado
+# en el chroot) — generados, no autoría a mano.
+/chroot.headers
+/chroot.packages.install
+/chroot.packages.live

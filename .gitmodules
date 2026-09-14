@@ -1,3 +1,6 @@
 [submodule "vendor/kal"]
 	path = vendor/kal
 	url = https://github.com/carlosbv99-bit/kal.git
+[submodule "vendor/kal-in"]
+	path = vendor/kal-in
+	url = https://github.com/carlosbv99-bit/kal-in.git

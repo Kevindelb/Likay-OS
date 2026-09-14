@@ -1,0 +1,32 @@
+#!/bin/bash
+# Instala kal-in desde /opt/kal-in (código copiado ahí por auto/build,
+# host, antes de `lb build` — ver ese script), usando SOLO
+# requirements-core.txt + requirements-dev.txt, sin
+# requirements-multimodal.txt (diffusers/torch pesan varios GB y esta
+# etapa no necesita generación de imagen/audio/video — ver
+# docs/ROADMAP.md, Etapa 1). Mismo patrón exacto que
+# 0300-install-kal.chroot, para el agente en vez del kernel.
+#
+# Fase 1 del issue #2 ("montar cualquier agente"): kal-in vendorizado y
+# conectado a mano, todavía no hay una interfaz genérica — eso queda
+# para cuando aparezca un segundo agente real que la justifique.
+set -euo pipefail
+
+# Idempotente, mismo motivo que 0300-install-kal.chroot.
+if ! id kal-in >/dev/null 2>&1; then
+    useradd -r -m -d /opt/kal-in-home -s /bin/false kal-in
+fi
+
+python3 -m venv /opt/kal-in/.venv
+/opt/kal-in/.venv/bin/pip install --no-cache-dir --upgrade pip
+/opt/kal-in/.venv/bin/pip install --no-cache-dir \
+    -r /opt/kal-in/requirements-core.txt \
+    -r /opt/kal-in/requirements-dev.txt
+
+# data/ (memoria, admin_token, claves de firma) tiene que ser escribible
+# en runtime por el usuario "kal-in" — en el live system esto vive en la
+# capa overlay en RAM, así que no persiste entre arranques (esperado en
+# esta etapa: ver docs/ROADMAP.md, "nada de instalación persistente
+# todavía").
+mkdir -p /opt/kal-in/data
+chown -R kal-in:kal-in /opt/kal-in /opt/kal-in-home
