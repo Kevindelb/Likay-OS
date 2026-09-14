@@ -1,6 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
+# Usuario de sistema ESTÁTICO para likay-installer.service — NO
+# DynamicUser=yes (probado en QEMU el 2026-09-14 y descartado: fuerza
+# NoNewPrivileges=yes de forma no desactivable, lo que cuelga
+# "pkexec calamares" en silencio para siempre — ver el comentario en
+# likay-installer.service). Mismo patrón que 0400-setup-kiosk.chroot:
+# grupos video/input/render para que Xorg pueda hablarle a DRM/input
+# directo. Sin grupos administrativos, sin sudo, sin password (useradd
+# -r deja el password bloqueado por default) — igual que kal/kal-in.
+if ! id likay-installer >/dev/null 2>&1; then
+    useradd -r -m -d /home/likay-installer -s /bin/bash -G video,input,render likay-installer
+fi
+
 # Instalador de Etapa 2 (ver docs/ROADMAP.md) — likay-installer.service
 # solo arranca si el kernel command line trae likay.mode=installer
 # (ver config/bootloaders/isolinux/install.cfg.in), así que habilitarlo

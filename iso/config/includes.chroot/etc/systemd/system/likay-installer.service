@@ -13,17 +13,27 @@ Conflicts=getty@tty2.service
 
 [Service]
 Type=simple
-# DynamicUser=yes crea likay-installer como identidad efímera: sin
-# shell de login, sin password, sin grupos administrativos, sin home
-# persistente -- mismo mecanismo que ya usa likay-smoke-test.service en
-# este proyecto. /etc/polkit-1/rules.d/60-likay-installer.rules
-# autoriza a ESTE usuario específico (no a kiosk) para correr Calamares
-# como root -- ver ese archivo para el razonamiento completo.
-DynamicUser=yes
+# Usuario de sistema ESTÁTICO (creado por 0420-setup-installer.chroot,
+# useradd -r -s /bin/bash), NO DynamicUser=yes -- probado en QEMU
+# (2026-09-14) y descartado a propósito: la documentación de systemd
+# (systemd.exec(5), DynamicUser=) dice explícito que DynamicUser=yes
+# fuerza NoNewPrivileges=yes de forma NO desactivable ("cannot be
+# disabled"), y además un /tmp privado salvo que se pida lo contrario.
+# Las dos cosas rompen este servicio en silencio: pkexec no puede
+# escalar a root bajo NoNewPrivileges (el arranque se cuelga
+# indefinidamente en "pkexec calamares", sin ningún error visible), y
+# aunque pudiera, el root de pkexec no vería el socket de Xorg en un
+# /tmp aislado del de este servicio. /etc/polkit-1/rules.d/
+# 60-likay-installer.rules autoriza a ESTE usuario específico (no a
+# kiosk) para correr Calamares como root -- ver ese archivo para el
+# razonamiento completo de por qué un usuario dedicado alcanza sin
+# necesidad de DynamicUser.
 User=likay-installer
-# PAMName=login: mismo motivo que likay-kiosk.service -- sesión real
-# vía logind para los permisos "uaccess" sobre DRM/input que Xorg
-# necesita para hablarle al hardware directo, sin un seatd separado.
+Group=likay-installer
+# PAMName=login + grupos video/input/render (ver el hook): mismo
+# mecanismo que ya usa likay-kiosk.service para los permisos "uaccess"
+# sobre DRM/input que Xorg necesita para hablarle al hardware directo,
+# sin un seatd separado.
 PAMName=login
 TTYPath=/dev/tty2
 StandardInput=tty
@@ -32,7 +42,8 @@ StandardError=journal+console
 # NoNewPrivileges NO se pone a propósito, a diferencia de casi
 # cualquier otro .service de este proyecto: el propósito entero de
 # este servicio es escalar a root vía pkexec/Polkit, y NoNewPrivileges
-# se lo bloquea a nivel de kernel. No "arreglar" esto agregándolo.
+# se lo bloquea a nivel de kernel. No "arreglar" esto agregándolo (y
+# no usar DynamicUser=yes, que lo fuerza igual sin avisar -- ver arriba).
 ExecStart=/usr/lib/likay/installer-launcher
 Restart=no
 

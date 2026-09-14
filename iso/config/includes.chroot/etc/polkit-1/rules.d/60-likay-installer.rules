@@ -4,9 +4,11 @@
 // administrativa humana con contraseña contra la cual autenticar eso.
 //
 // La autorización real acá no es "quién es el usuario" sino "cómo
-// llegó a ser ese usuario": likay-installer es una identidad técnica
-// (DynamicUser, sin login, sin password, sin sudo, sin grupos admin)
-// en la que solo corre likay-installer.service, que a su vez solo
+// llegó a ser ese usuario": likay-installer es un usuario de sistema
+// ESTÁTICO (useradd -r, sin login/password/sudo/grupos admin --
+// 0420-setup-installer.chroot; NO DynamicUser=yes, que rompe pkexec en
+// silencio, ver likay-installer.service) en el que solo corre
+// likay-installer.service, que a su vez solo
 // arranca si la máquina bootea con likay.mode=installer en la línea de
 // kernel (ver likay-installer.service, ConditionKernelCommandLine, y
 // config/bootloaders/isolinux/install.cfg.in). kiosk no tiene ningún

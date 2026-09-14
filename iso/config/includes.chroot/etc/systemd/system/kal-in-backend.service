@@ -2,6 +2,12 @@
 Description=kal-in backend (uvicorn / agent_core.orchestrator) — agente de referencia sobre el kernel kal
 After=network.target ollama.service
 Wants=ollama.service
+# Encontrado probando likay-installer.service en QEMU (2026-09-14):
+# esto arrancaba igual en modo instalador, sin ninguna razón para
+# estar corriendo ahí (Calamares no lo necesita, y es superficie
+# innecesaria mientras hay acceso privilegiado al disco de por medio).
+# Mismo mecanismo que likay-kiosk.service. Ver docs/ROADMAP.md, Etapa 2.
+ConditionKernelCommandLine=!likay.mode=installer
 
 [Service]
 Type=simple
