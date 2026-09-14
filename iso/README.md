@@ -316,15 +316,27 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     nunca apareció — probablemente porque una NTFS vacía (sin archivos
     reales de Windows) no la detecta `os-prober` como sistema
     operativo real, haría falta simular una instalación de Windows más
-    elaborada para probar ese camino específico. **Bug real
-    encontrado:** clickear el checkbox/barra de selección de partición
-    dentro del flujo "Replace a partition" cuelga toda la sesión
-    Xorg/Calamares con `Segmentation fault` — reproducido dos veces
-    (un doble-click, y un click simple directo sobre el checkbox).
-    Mata la sesión gráfica entera, sin poder seguir. No investigado a
-    fondo todavía — haría falta `gdb` en vivo dentro de la VM (ver
-    "Cosas raras" más abajo), bastante más trabajo que lo hecho hasta
-    ahora.
+    elaborada para probar ese camino específico. **Bug real de
+    Calamares, diagnosticado con `gdb` en vivo dentro de la VM:**
+    clickear el checkbox/barra de selección de partición dentro del
+    flujo "Replace a partition" cuelga toda la sesión Xorg/Calamares
+    con `Segmentation fault` — reproducido tres veces (un doble-click,
+    un click simple sobre el checkbox, y una vez más ya corriendo bajo
+    `gdb`). El backtrace del thread que crashea es 100% interno de Qt,
+    sin ningún símbolo de Calamares:
+    `QListView::currentChanged` → `QAbstractItemView::currentChanged`
+    → `QStandardItemModel::flags()` → `QStandardItem::child()` —
+    sugiere un `QModelIndex` inválido/desactualizado en el modelo que
+    arma esa lista. No es nuestro — reporte preparado con el backtrace
+    completo para subir a
+    [Codeberg.org/Calamares/calamares/issues](https://codeberg.org/Calamares/calamares/issues)
+    (Codeberg, no GitHub — el proyecto movió ahí su tracker; texto
+    completo del reporte en `/var/tmp/likay-dualboot/
+    calamares-bug-report.md`, todavía sin publicar al escribir esto —
+    actualizar este link con el número real una vez publicado). El
+    scaffolding de `gdb` usado para esto
+    (paquete + acción de PolicyKit propia + wrapper) fue temporal,
+    revertido (`c2374e5`, `d89ca6e`) — no queda en el build normal.
   - Todavía sin conectar: Secure Boot/TPM (bloqueado por UEFI, issue
     #6, fuera de alcance por ahora). Ver `docs/ROADMAP.md`, Etapa 2.
 
