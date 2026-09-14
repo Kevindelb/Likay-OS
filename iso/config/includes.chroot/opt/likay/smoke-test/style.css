@@ -80,3 +80,57 @@ code {
   line-height: 1.5;
   margin-top: 24px;
 }
+
+.card.chat {
+  margin-top: 16px;
+}
+
+.log {
+  max-height: 40vh;
+  min-height: 60px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.line {
+  margin: 0;
+  font-size: 0.9em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.line.you { color: var(--fg); }
+.line.bot { color: var(--accent); }
+
+#chat-form {
+  display: flex;
+  gap: 8px;
+}
+
+#msg {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.9em;
+}
+#msg:focus { outline: 1px solid var(--accent); }
+
+#send {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 0.9em;
+  font-weight: 600;
+  cursor: pointer;
+}
+#send:disabled { opacity: 0.5; cursor: default; }

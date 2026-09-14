@@ -23,6 +23,14 @@
       </div>
     </div>
 
+    <div class="card chat">
+      <div id="log" class="log"></div>
+      <form id="chat-form">
+        <input id="msg" type="text" placeholder="Probá el modelo…" autocomplete="off">
+        <button type="submit" id="send">Enviar</button>
+      </form>
+    </div>
+
     <p class="note">
       Esta es una pantalla de verificación, no el kiosco final — confirma
       que el LLM propio de Likay-OS arrancó bien antes de hornear la ISO
@@ -50,6 +58,46 @@
     }
     refresh();
     setInterval(refresh, 3000);
+
+    const log = document.getElementById("log");
+    const form = document.getElementById("chat-form");
+    const input = document.getElementById("msg");
+    const sendBtn = document.getElementById("send");
+
+    function addLine(who, text) {
+      const p = document.createElement("p");
+      p.className = "line " + who;
+      p.textContent = (who === "you" ? "vos: " : "qwen: ") + text;
+      log.appendChild(p);
+      log.scrollTop = log.scrollHeight;
+      return p;
+    }
+
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      input.disabled = true;
+      sendBtn.disabled = true;
+      addLine("you", message);
+      const pending = addLine("bot", "pensando… (el primer mensaje puede tardar bastante — está cargando el modelo en RAM)");
+      try {
+        const r = await fetch("/api/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({message}),
+        });
+        const data = await r.json();
+        pending.textContent = "qwen: " + (r.ok ? data.response : ("error — " + data.error));
+      } catch (e) {
+        pending.textContent = "qwen: error de red — " + e;
+      } finally {
+        input.disabled = false;
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    });
   </script>
 </body>
 </html>

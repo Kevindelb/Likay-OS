@@ -33,6 +33,26 @@ def _ollama_get(path: str):
         return None
 
 
+def ollama_generate(prompt: str) -> dict:
+    # 120s: el primer prompt puede tener que cargar el modelo entero en
+    # RAM antes de generar nada (más lento todavía sin GPU real, como en
+    # QEMU) — no es un timeout por request normal, es margen para ese
+    # arranque en frío. stream=false: mucho más simple de manejar acá
+    # (una sola respuesta JSON) que parsear el streaming NDJSON que usa
+    # Ollama por default — aceptable para una página descartable donde
+    # "probar que el modelo contesta algo" alcanza, no hace falta ver el
+    # texto aparecer token por token.
+    body = json.dumps({"model": MODEL_TAG, "prompt": prompt, "stream": False}).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_HOST}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.load(r)
+
+
 def get_status() -> dict:
     tags = _ollama_get("/api/tags")
     ps = _ollama_get("/api/ps")
@@ -56,14 +76,43 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/style.css":
             self._serve_file(STATIC_DIR / "style.css", "text/css; charset=utf-8")
         elif self.path == "/api/status":
-            body = json.dumps(get_status()).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._json_response(200, get_status())
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        if self.path != "/api/chat":
+            self.send_error(404)
+            return
+
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            message = (payload.get("message") or "").strip()
+        except (json.JSONDecodeError, ValueError):
+            message = ""
+
+        if not message:
+            self._json_response(400, {"error": "mensaje vacío"})
+            return
+
+        try:
+            result = ollama_generate(message)
+            self._json_response(200, {"response": result.get("response", "")})
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
+            # No se distingue "Ollama caído" de "tardó más de 120s" acá
+            # a propósito — para una página de smoke-test alcanza con
+            # saber que algo salió mal, no vale la pena el código extra
+            # para diferenciar el motivo exacto.
+            self._json_response(502, {"error": f"no se pudo generar respuesta: {e}"})
+
+    def _json_response(self, status: int, data: dict):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_file(self, path: Path, content_type: str):
         try:

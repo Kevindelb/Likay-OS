@@ -1,7 +1,14 @@
 [Unit]
 Description=Likay-OS kiosk (cage + epiphany)
-After=kal-backend.service systemd-user-sessions.service getty@tty1.service
-Wants=kal-backend.service
+# NO kal-backend.service acá — quedó roto por el split kal/kal-in (ver
+# docs/ROADMAP.md), y un simple `systemctl disable kal-backend.service`
+# en el hook 0400 NO alcanza para evitar que arranque: un Wants=/After=
+# acá mismo alcanza para activarlo como dependencia, sin importar su
+# propio estado de habilitación — encontrado en vivo (el ModuleNotFound
+# de agent_core seguía apareciendo en el boot pese al disable). Apunta
+# a likay-smoke-test.service, que es lo que de verdad sirve :8000 hoy.
+After=likay-smoke-test.service systemd-user-sessions.service getty@tty1.service
+Wants=likay-smoke-test.service
 Conflicts=getty@tty1.service
 
 [Service]
