@@ -8,8 +8,15 @@ Description=Likay-OS installer (Xorg + Calamares)
 # saltea (Skipped, no Failed) -- kiosk y el instalador nunca coexisten
 # en el mismo arranque. Ver docs/ROADMAP.md, Etapa 2.
 ConditionKernelCommandLine=likay.mode=installer
-After=systemd-user-sessions.service getty@tty2.service
-Conflicts=getty@tty2.service
+# tty1, no tty2: probado en QEMU (2026-09-14) -- Xorg.wrap rechaza
+# arrancar ("Only console users are allowed to run the X server") si
+# la sesión no está en la VT ACTIVA, y nada activa tty2 solo con
+# TTYPath/PAMName=login (el kernel deja tty1 activa por default).
+# Usar la misma tty1 que likay-kiosk.service no genera conflicto real:
+# por la ConditionKernelCommandLine de ambos servicios, nunca corren
+# en el mismo arranque -- ver docs/ROADMAP.md, Etapa 2.
+After=systemd-user-sessions.service getty@tty1.service
+Conflicts=getty@tty1.service
 
 [Service]
 Type=simple
@@ -35,7 +42,7 @@ Group=likay-installer
 # sobre DRM/input que Xorg necesita para hablarle al hardware directo,
 # sin un seatd separado.
 PAMName=login
-TTYPath=/dev/tty2
+TTYPath=/dev/tty1
 StandardInput=tty
 StandardOutput=journal+console
 StandardError=journal+console

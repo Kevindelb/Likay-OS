@@ -3,13 +3,16 @@
 # escritorio, no hay gestor de ventanas (Calamares corre a pantalla
 # completa por su cuenta). Arranca como ExecStart de
 # likay-installer.service, corriendo como el usuario likay-installer
-# (DynamicUser), separado por completo de cage/kiosk (ver
-# docs/ROADMAP.md, Etapa 2, y likay-installer.service para el porqué de
-# esa separación).
+# (usuario de sistema estático), separado por completo de cage/kiosk
+# (ver docs/ROADMAP.md, Etapa 2, y likay-installer.service para el
+# porqué de esa separación).
 set -eu
 
+# vt1, no vt2: mismo motivo que TTYPath=/dev/tty1 en
+# likay-installer.service -- Xorg.wrap exige que la sesión esté en la
+# VT activa, y solo tty1 lo es por default sin un chvt explícito.
 XORG_LOG="$(mktemp)"
-Xorg :0 vt2 -nolisten tcp -noreset >"${XORG_LOG}" 2>&1 &
+Xorg :0 vt1 -nolisten tcp -noreset >"${XORG_LOG}" 2>&1 &
 XORG_PID=$!
 
 cleanup() {
