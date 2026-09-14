@@ -143,6 +143,43 @@ arranca en el origen — siempre encadenar `move` justo antes de
 `click` en la misma llamada, no asumir que la posición persiste entre
 llamadas separadas.
 
+**Importante:** `/tmp` puede ser `tmpfs` (RAM, no disco) en algunas
+máquinas — confirmado en la máquina de desarrollo de este proyecto,
+con solo ~7.5G de capacidad. Un archivo de prueba de varios GB ahí
+puede agotar la RAM y colgar el equipo entero (pasó de verdad
+armando el disco de prueba dual-boot de abajo). Usá `/var/tmp`
+(respaldado por disco) para cualquier imagen de disco o archivo
+grande de prueba.
+
+Para simular un disco con Windows/NTFS ya instalado (probar
+dual-boot) sin root ni loop devices:
+
+```bash
+qemu-img create -f raw /var/tmp/disco.img 40G   # RAW, no qcow2 --
+                                                  # parted necesita
+                                                  # operar el archivo
+                                                  # directo
+parted --script /var/tmp/disco.img mklabel msdos
+parted --script /var/tmp/disco.img mkpart primary ntfs 1MiB 35GiB
+parted --script /var/tmp/disco.img unit s print   # confirmar el
+                                                   # sector de inicio
+                                                   # real (típicamente
+                                                   # 2048s = 1MiB)
+
+# formatear un archivo aparte, del tamaño exacto de la partición
+qemu-img create -f raw /var/tmp/ntfs-part.img <tamaño-en-bytes>
+mkfs.ntfs -f -F -L "Windows" /var/tmp/ntfs-part.img
+
+# insertarlo en el disco completo, en el offset correcto
+dd if=/var/tmp/ntfs-part.img of=/var/tmp/disco.img \
+   bs=1M seek=1 conv=notrunc,sparse   # seek=1 si la partición
+                                       # arranca en 1MiB
+```
+
+`conv=sparse` mantiene el archivo destino disperso (sparse) — el uso
+real de disco queda en decenas de MB, no en los 40G nominales
+(confirmar con `du -sh`, no con `ls -la`).
+
 ## Estado actual
 
 Confirmado arrancando de punta a punta, en QEMU y en hardware real
@@ -269,12 +306,27 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     el Likay-OS instalado sigue siendo kiosco o se vuelve un sistema
     "normal" es una pregunta de diseño todavía sin resolver (issue
     #1), no algo para decidir de paso acá.
-  - Todavía sin conectar: dual-boot real (shrink de una partición
-    NTFS/ext4 existente — soportado nativamente por el módulo
-    `partition` de Calamares, y ya testeable de verdad ahora que el
-    click headless funciona — ver "Probar en QEMU" más arriba — pero
-    sin probar todavía), Secure Boot/TPM. Ver `docs/ROADMAP.md`,
-    Etapa 2.
+  - **Dual-boot — probado parcialmente, bloqueado por un crash real de
+    Calamares (2026-09-14):** con un disco de prueba armado a mano con
+    una partición NTFS real (`parted` + `mkfs.ntfs` directo sobre un
+    archivo, sin loop device ni root — ver nota al final de "Probar en
+    QEMU"), Calamares detecta bien la partición (`vda1: 35.00 GiB
+    NTFS` + `Free Space: 5.00 GiB`) y ofrece una opción nueva,
+    "Replace a partition", que no aparece con disco vacío. "Alongside"
+    nunca apareció — probablemente porque una NTFS vacía (sin archivos
+    reales de Windows) no la detecta `os-prober` como sistema
+    operativo real, haría falta simular una instalación de Windows más
+    elaborada para probar ese camino específico. **Bug real
+    encontrado:** clickear el checkbox/barra de selección de partición
+    dentro del flujo "Replace a partition" cuelga toda la sesión
+    Xorg/Calamares con `Segmentation fault` — reproducido dos veces
+    (un doble-click, y un click simple directo sobre el checkbox).
+    Mata la sesión gráfica entera, sin poder seguir. No investigado a
+    fondo todavía — haría falta `gdb` en vivo dentro de la VM (ver
+    "Cosas raras" más abajo), bastante más trabajo que lo hecho hasta
+    ahora.
+  - Todavía sin conectar: Secure Boot/TPM (bloqueado por UEFI, issue
+    #6, fuera de alcance por ahora). Ver `docs/ROADMAP.md`, Etapa 2.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 
