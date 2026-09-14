@@ -327,13 +327,10 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     `QListView::currentChanged` → `QAbstractItemView::currentChanged`
     → `QStandardItemModel::flags()` → `QStandardItem::child()` —
     sugiere un `QModelIndex` inválido/desactualizado en el modelo que
-    arma esa lista. No es nuestro — reporte preparado con el backtrace
-    completo para subir a
-    [Codeberg.org/Calamares/calamares/issues](https://codeberg.org/Calamares/calamares/issues)
-    (Codeberg, no GitHub — el proyecto movió ahí su tracker; texto
-    completo del reporte en `/var/tmp/likay-dualboot/
-    calamares-bug-report.md`, todavía sin publicar al escribir esto —
-    actualizar este link con el número real una vez publicado). El
+    arma esa lista. No es nuestro — reportado upstream con el
+    backtrace completo en
+    [Calamares/calamares#2535](https://codeberg.org/Calamares/calamares/issues/2535)
+    (Codeberg, no GitHub — el proyecto movió ahí su tracker). El
     scaffolding de `gdb` usado para esto
     (paquete + acción de PolicyKit propia + wrapper) fue temporal,
     revertido (`c2374e5`, `d89ca6e`) — no queda en el build normal.
