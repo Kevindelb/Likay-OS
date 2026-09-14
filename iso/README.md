@@ -191,19 +191,32 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     `bootloader-config` con una versión propia que hornea
     `grub-pc`/`cryptsetup`/`cryptsetup-initramfs`/`keyutils` en el
     medio live en vez de instalarlos en vivo por red durante el
-    install). **Los otros tres siguen afuera de la secuencia**
-    (`sources-media(-unmount)`, `sources-final`, hook
-    `0430-trim-calamares-sequence.chroot`) porque de verdad son
-    incompatibles, no solo "sin compilar": están hardcodeados a rutas
-    de montaje de live-build/live-boot que no existen en nuestro medio
-    basado en casper, y a Debian trixie/sus servidores de paquetes —
-    nosotros somos Ubuntu resolute. Necesitan una versión propia,
-    todavía sin escribir.
+    install). **Los otros tres quedan afuera de la secuencia
+    permanentemente, no como pendiente** (`sources-media(-unmount)`,
+    `sources-final`, hook `0430-trim-calamares-sequence.chroot`):
+    verificado a mano montando el squashfs horneado, `/etc/apt/
+    sources.list` ya tiene las fuentes reales de Ubuntu resolute sin
+    que nuestro pipeline las toque — `sources-final` (que Debian usa
+    para reescribir esto) no tendría nada útil que hacer. Y
+    `packages.conf` (ver abajo) solo remueve paquetes, nunca instala,
+    así que tampoco necesita `sources-media` (que le daría a apt un
+    origen local). No es que sean incompatibles y haya que
+    reescribirlos — genuinamente no hacen falta en nuestro caso.
+  - **`packages.conf` corregido** (hook
+    `0450-configure-calamares-packages.chroot`): la lista `remove:`
+    vendorizada nombra paquetes de Debian (`live-boot`, `live-config`)
+    que nunca instalamos (usamos `casper`) — inofensivo pero inútil,
+    `apt remove` sobre algo no instalado no hace nada. Reemplazada por
+    `remove: [casper]`, que sí es basura real solo-para-live en un
+    sistema ya instalado. Deliberadamente sin tocar el resto del stack
+    de kiosco (`cage`/`epiphany-browser`/`xdg-desktop-portal*`) — si
+    el Likay-OS instalado sigue siendo kiosco o se vuelve un sistema
+    "normal" es una pregunta de diseño todavía sin resolver (issue
+    #1), no algo para decidir de paso acá.
   - Todavía sin conectar: dual-boot real (shrink de una partición
     NTFS/ext4 existente — soportado nativamente por el módulo
     `partition` de Calamares, pero sin probar todavía), Secure
-    Boot/TPM, y el reemplazo propio de `sources-media`/`sources-final`.
-    Ver `docs/ROADMAP.md`, Etapa 2.
+    Boot/TPM. Ver `docs/ROADMAP.md`, Etapa 2.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 
