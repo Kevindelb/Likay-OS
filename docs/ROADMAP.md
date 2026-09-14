@@ -33,6 +33,18 @@ agente de terceros que exponga lo que el Access Manager necesita para
 mediarlo (permisos explícitos, sin acceso directo sin pasar por el
 kernel) tiene que poder montarse igual.
 
+**Ningún agente se hornea dentro de la imagen de Likay-OS.** Likay-OS
+se instala solo sobre `kal` — kernel más la capa propia de Likay (LLM
+chico, kiosco/anfitrión). El agente (kal-in u otro) es algo que el
+usuario monta *después*, con Likay-OS ya instalado y corriendo, en su
+propia partición del disco — igual que instalar una aplicación sobre
+un sistema operativo ya instalado, no algo que viene precargado de
+fábrica. Esto es, por definición, trabajo de persistencia en disco real
+(ver Etapa 2 más abajo) — no existe todavía en Etapa 1 (live-boot puro,
+sin tocar el disco). El `kal-in` horneado en la ISO actual de Etapa 1
+es un prototipo de validación temporal del pipeline de boot, no el
+diseño final de cómo se monta un agente.
+
 ## Decisión de fondo: por qué no un kernel desde cero (todavía)
 
 Un sistema operativo propio de verdad independiente (bootloader, kernel,
@@ -55,11 +67,13 @@ como punto de partida.
 **Entrega:** Likay-OS arranca directo desde un USB, sin tocar el disco
 real de la máquina — el kernel `kal` montado, un LLM propio y chico
 (`qwen2.5:3b`) siempre cargado para clasificación de intención y para
-orientar al usuario apenas arranca, capacidad de montar cualquier
-agente del mercado (kal-in como opción por default), y un kiosco
-propio — pantalla completa, sin escritorio ni barra de tareas
-alrededor, pensado para dar una experiencia empática y funcional al
-usuario, no un panel de chat de desarrollador.
+orientar al usuario apenas arranca, y un kiosco propio — pantalla
+completa, sin escritorio ni barra de tareas alrededor, pensado para dar
+una experiencia empática y funcional al usuario, no un panel de chat de
+desarrollador. La ISO en sí no trae ningún agente horneado — eso es
+trabajo de Etapa 2 (ver más abajo). Para validar el pipeline de boot de
+punta a punta, esta etapa incluye `kal-in` horneado a mano como
+prototipo temporal (no el diseño final de cómo se monta un agente).
 
 - **Base:** Debian/Ubuntu mínimo — a propósito, no Alpine. El stack de
   kal-in (PyTorch/diffusers en particular) ya está probado sobre esa
@@ -82,7 +96,10 @@ usuario, no un panel de chat de desarrollador.
   media los recursos del agente que esté montado — sea kal-in o un
   agente de terceros — de la misma forma. Ningún agente monta el
   sistema sin pasar por ese límite; eso es lo único no negociable de
-  esta etapa (ver el principio de arriba).
+  esta etapa (ver el principio de arriba). El montaje real del agente
+  (instalado por el usuario en su propia partición) es trabajo de
+  Etapa 2 — acá el requisito es que el kernel esté listo para mediarlo
+  cuando exista.
 - **A vigilar:** el kernel, el LLM propio, y el agente montado arrancan
   como servicios de red desde el boot mismo, sin que el usuario los
   "abra" a mano — hay que confirmar que el binding a loopback
@@ -94,7 +111,12 @@ usuario, no un panel de chat de desarrollador.
 ## Etapa 2 — Instalador real para dual-boot
 
 **Entrega:** instalación persistente, conviviendo con el Windows/Linux
-que el usuario ya tenga en la máquina.
+que el usuario ya tenga en la máquina. Likay-OS se instala solo sobre
+`kal` (kernel + capa propia) — sin ningún agente incluido. Recién acá
+el usuario monta el agente que quiera (kal-in u otro) en su propia
+partición, con Likay-OS ya instalado y corriendo — no algo horneado de
+fábrica, igual que instalar una aplicación sobre un sistema operativo
+que ya está instalado.
 
 - **Riesgo nuevo, el más serio de todo el roadmap:** es la primera vez
   que se escribe sobre el disco real — una partición mal hecha o un
@@ -104,7 +126,11 @@ que el usuario ya tenga en la máquina.
 - **Mitigación:** backup completo obligatorio antes de tocar nada; usar
   un instalador ya probado en el mundo real (p.ej. Calamares) en vez de
   escribir uno propio desde cero; modo de simulación (dry-run) antes de
-  escribir de verdad.
+  escribir de verdad. El Access Manager media el acceso del agente
+  recién instalado a esa partición y al resto del sistema desde el
+  primer momento — mismo criterio de "nunca confiar en el código interno
+  del agente" del principio de arriba, ahora con disco persistente de
+  por medio.
 - **Fortalezas a sumar en esta etapa, no antes** (recién tienen sentido
   con una instalación persistente):
   - **Secure Boot + arranque medido (TPM)** — protege contra
@@ -201,11 +227,17 @@ Likay-OS gestiona.
 
 Etapa 1, parcial: el pipeline de arranque en sí (BIOS → casper →
 systemd → un backend en 127.0.0.1 → kiosco Wayland en pantalla
-completa) ya está probado de punta a punta en QEMU (ver
-[`iso/README.md`](../iso/README.md)). Lo que corre hoy en ese kiosco
-es el chat de kal-in directo — un prototipo que validó la
-infraestructura de boot (independiente de qué agente corra encima),
-pero no el diseño final: todavía falta hornear `qwen2.5:3b` como capa
-propia de Likay-OS, definir la interfaz genérica para montar cualquier
-agente (hoy el ISO asume kal-in a mano, sin esa capa), y diseñar el
-kiosco nuevo. Ninguna otra etapa está implementada.
+completa) ya está probado de punta a punta en QEMU y en hardware real
+(ver [`iso/README.md`](../iso/README.md)), con `qwen2.5:3b` horneado
+como LLM propio de Likay-OS y `kal-in` horneado a mano como prototipo
+de validación (no el diseño final — ver el principio de arriba).
+Todavía falta diseñar el kiosco nuevo.
+
+**Decisión de diseño 2026-09-14:** ningún agente se hornea en la ISO de
+Likay-OS. El usuario monta su propio agente (kal-in u otro) en su
+propia partición del disco, con Likay-OS ya instalado y corriendo —
+eso es trabajo de Etapa 2 (instalador real), no de Etapa 1. La
+interfaz genérica para montar cualquier agente (issue
+[#2](https://github.com/Kevindelb/Likay-OS/issues/2), Fase 2) se
+diseña junto con esa etapa, no antes. Ninguna etapa más allá de la 1
+está implementada.
