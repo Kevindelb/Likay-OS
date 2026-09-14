@@ -127,5 +127,9 @@ x11-xserver-utils
 
 # polkitd/pkexec: mecanismo de elevación de Calamares. Se lista acá
 # explícito en vez de confiar en que llegue como dependencia transitiva
-# de calamares — mismo criterio que el resto de este archivo.
+# de calamares — mismo criterio que el resto de este archivo. pkexec es
+# un paquete SEPARADO de polkitd (probado en QEMU 2026-09-14: Xorg
+# arrancó bien pero "pkexec: not found" — polkitd solo trae el daemon,
+# no el binario cliente).
 polkitd
+pkexec
