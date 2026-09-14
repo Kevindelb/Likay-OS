@@ -1,0 +1,60 @@
+#!/bin/bash
+set -euo pipefail
+
+# packages.conf vendorizado (calamares-settings-debian) trae una lista
+# de "remove:" para sacar del sistema instalado los paquetes que solo
+# tienen sentido en el medio LIVE (live-boot, live-config, etc.) --
+# nombres específicos del mecanismo live-build/live-boot de Debian.
+# Nosotros usamos casper (Ubuntu), no live-boot -- esos nombres no
+# existen en nuestro sistema (apt remove sobre un paquete no instalado
+# no falla, solo no hace nada), así que la lista original es
+# inofensiva pero inútil para nosotros: no saca nada de verdad.
+#
+# Confirmado por separado (2026-09-14, revisando el squashfs a mano
+# con el usuario): /etc/apt/sources.list del sistema horneado ya tiene
+# las fuentes reales de Ubuntu resolute, sin tocar por nuestro
+# pipeline -- por eso sources-final/sources-media no hacen falta acá
+# (a diferencia de Debian, packages.conf tampoco INSTALA nada, solo
+# remueve, así que ni siquiera necesita red).
+#
+# Este parche reemplaza la lista por la nuestra: por ahora solo
+# `casper` (specific de detectar/montar el medio live -- cero sentido
+# en un sistema ya instalado en disco). Deliberadamente NO se toca acá
+# el resto del stack de kiosco (cage, epiphany-browser, xdg-desktop-
+# portal*) -- si el Likay-OS instalado debe seguir arrancando en modo
+# kiosco o convertirse en un sistema "normal" es una pregunta de
+# diseño todavía sin resolver (ver issue #1, kiosco nuevo), no algo
+# para decidir de paso acá.
+PACKAGES_CONF=/etc/calamares/modules/packages.conf
+
+if ! [ -f "${PACKAGES_CONF}" ]; then
+    echo "0450: no existe ${PACKAGES_CONF} -- ¿corrió el rsync de vendor/calamares-settings-debian en auto/build?" >&2
+    exit 1
+fi
+
+python3 - "${PACKAGES_CONF}" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+MARKER = "# likay-packages-remove-v1"
+
+with open(path) as f:
+    content = f.read()
+
+if MARKER in content:
+    print("0450: packages.conf ya estaba parcheado (build anterior) -- nada que hacer.")
+    sys.exit(0)
+
+new_content = f'''backend: apt
+
+{MARKER}
+operations:
+  - remove:
+      - 'casper'
+'''
+
+with open(path, "w") as f:
+    f.write(new_content)
+
+print("0450: packages.conf reemplazado -- remove: [casper] en vez de la lista de Debian (live-boot/live-config, no aplican a casper).")
+PYEOF
