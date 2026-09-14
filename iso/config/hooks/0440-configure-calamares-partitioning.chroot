@@ -9,9 +9,9 @@ set -euo pipefail
 #
 # Layout:
 #   - root (/): ext4, LUKS2 (luksGeneration ya está en luks2 en
-#     partition.conf), 70% del disco, mínimo 20G -- suficiente para
-#     Debian mínimo + el stack de un agente tipo kal-in (PyTorch/
-#     diffusers, pesado -- ver docs/ROADMAP.md, Etapa 1).
+#     partition.conf), tamaño FIJO 20G -- suficiente para Debian mínimo
+#     + el stack de un agente tipo kal-in (PyTorch/diffusers, pesado --
+#     ver docs/ROADMAP.md, Etapa 1).
 #   - likay-agent: ext4, LUKS2 TAMBIÉN (misma passphrase que root,
 #     Calamares maneja el desbloqueo de varios volúmenes LUKS con la
 #     misma clave vía crypttab) -- SIN mountPoint a propósito, para que
@@ -22,8 +22,19 @@ set -euo pipefail
 #     es opcional en esta etapa justamente por los tokens/credenciales
 #     que un agente puede llegar a guardar ahí -- no hay razón para
 #     dejarla sin cifrar solo porque todavía no se diseñó cómo se usa.
-#     30% del disco, mínimo 10G -- tamaño placeholder, sin datos de uso
-#     real todavía, fácil de ajustar después.
+#     size: 100% (todo lo que quede del disco), mínimo 10G.
+#
+# Primero se probó con dos porcentajes (70%/30%) que en teoría suman
+# 100% del disco -- probado en QEMU (2026-09-14) con un disco virtual
+# de 40G: Calamares terminó proponiendo root=21G, likay-agent=10G y
+# ¡9G de "Free Space" sin asignar! Los porcentajes NO son "% del disco
+# total" como sugiere el comentario de arriba en este mismo archivo
+# (vendorizado) -- el propio ejemplo de partition.conf usa size: 100%
+# solo en la ÚLTIMA entrada de la lista, dando a entender que 100%
+# significa "lo que quede", no "100% del disco". Se cambió a tamaño
+# fijo + 100% en la última entrada, seguiendo ese patrón documentado
+# en vez de porcentajes independientes -- pendiente reconfirmar en
+# QEMU que ahora sí se asigna todo el disco sin dejar nada libre.
 #
 # No se toca el ESP (efi: más arriba en este mismo archivo) -- Calamares
 # ya lo antepone solo cuando hace falta (UEFI), y esta ISO sigue siendo
@@ -56,12 +67,11 @@ partitionLayout:
       filesystem: "ext4"
       noEncrypt: false
       mountPoint: "/"
-      size: 70%
-      minSize: 20G
+      size: 20G
     - name: "likay-agent"
       filesystem: "ext4"
       noEncrypt: false
-      size: 30%
+      size: 100%
       minSize: 10G
 '''
 
@@ -73,7 +83,7 @@ if LAYOUT_MARKER in content:
 else:
     with open(partition_path, "a") as f:
         f.write(LAYOUT_BLOCK)
-    print("0440: partitionLayout agregado a partition.conf (root 70%/min 20G + likay-agent 30%/min 10G, ambas LUKS2).")
+    print("0440: partitionLayout agregado a partition.conf (root 20G fijo + likay-agent 100%/min 10G, ambas LUKS2).")
 
 # --- welcome.conf: requiredStorage 15 -> 30 (root+agente combinados) ---
 old_line = "    requiredStorage:    15\n"
