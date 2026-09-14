@@ -1,0 +1,62 @@
+#!/bin/bash
+set -euo pipefail
+
+# Probado en QEMU (2026-09-14): con Xorg + pkexec ya funcionando,
+# Calamares fallaba al arrancar (CalamaresApplication::initFailed)
+# porque settings.conf (vendorizado de calamares-settings-debian, ver
+# vendor/calamares-settings-debian/calamares/settings.conf) referencia
+# seis módulos CUSTOM de Debian que viven como código fuente compilado
+# aparte (calamares-modules/ en ese mismo repo, NO vendorizado a
+# propósito -- ver el comentario en auto/build) y que Calamares carga
+# de forma obligatoria al iniciar, aunque solo se usen en la fase
+# "exec" (instalación real), nunca en la fase "show" (UI):
+#
+#   dpkg-unsafe-io, dpkg-unsafe-io-undo, sources-media,
+#   sources-media-unmount, sources-final, bootloader-config
+#
+# Estos módulos hacen optimizaciones y ajustes de fuentes apt
+# específicos de Debian (desactivar fsync durante dpkg, apuntar a los
+# repos del medio live en vez de a internet, etc.) que Likay-OS va a
+# necesitar diseñar de nuevo de todas formas cuando se implemente el
+# particionado real (ver docs/ROADMAP.md, Etapa 2) -- no tiene sentido
+# compilar los módulos de Debian tal cual ahora solo para validar que
+# Xorg/Calamares arrancan. Se los saca de la secuencia por ahora; la
+# fase "show" (welcome/locale/keyboard/partition/users/summary, lo
+# único que hace falta para esta validación) no los necesita.
+SETTINGS=/etc/calamares/settings.conf
+
+if ! [ -f "${SETTINGS}" ]; then
+    echo "0430: no existe ${SETTINGS} -- ¿corrió el rsync de vendor/calamares-settings-debian en auto/build?" >&2
+    exit 1
+fi
+
+python3 - "${SETTINGS}" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+missing_modules = [
+    "dpkg-unsafe-io",
+    "sources-media",
+    "bootloader-config",
+    "dpkg-unsafe-io-undo",
+    "sources-media-unmount",
+    "sources-final",
+]
+
+with open(path) as f:
+    content = f.read()
+
+removed = []
+for name in missing_modules:
+    line = f"  - {name}\n"
+    if line in content:
+        content = content.replace(line, "", 1)
+        removed.append(name)
+
+if removed:
+    with open(path, "w") as f:
+        f.write(content)
+    print(f"0430: sacados de la secuencia (no compilados todavía): {', '.join(removed)}")
+else:
+    print("0430: ningún módulo de la lista estaba en settings.conf (build anterior ya parcheado, o cambió el vendorizado) -- nada que hacer.")
+PYEOF
