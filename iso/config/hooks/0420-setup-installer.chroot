@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+
+# Instalador de Etapa 2 (ver docs/ROADMAP.md) — likay-installer.service
+# solo arranca si el kernel command line trae likay.mode=installer
+# (ver config/bootloaders/isolinux/install.cfg.in), así que habilitarlo
+# acá no lo hace correr en un boot normal de kiosco. `systemctl enable`
+# solo escribe los symlinks de [Install] — no hace falta un systemd
+# corriendo de verdad dentro del chroot para esto (mismo motivo que
+# 0400-setup-kiosk.chroot).
+chmod 0755 /usr/lib/likay/installer-launcher
+
+systemctl enable likay-installer.service

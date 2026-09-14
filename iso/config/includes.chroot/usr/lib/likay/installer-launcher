@@ -1,0 +1,49 @@
+#!/bin/sh
+# Sesión gráfica mínima dedicada exclusivamente a Calamares -- no es un
+# escritorio, no hay gestor de ventanas (Calamares corre a pantalla
+# completa por su cuenta). Arranca como ExecStart de
+# likay-installer.service, corriendo como el usuario likay-installer
+# (DynamicUser), separado por completo de cage/kiosk (ver
+# docs/ROADMAP.md, Etapa 2, y likay-installer.service para el porqué de
+# esa separación).
+set -eu
+
+XORG_LOG="$(mktemp)"
+Xorg :0 vt2 -nolisten tcp -noreset >"${XORG_LOG}" 2>&1 &
+XORG_PID=$!
+
+cleanup() {
+    kill "${XORG_PID}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Esperar a que el socket de X exista, sin asumir un tiempo fijo -- Xorg
+# tarda variable según el hardware.
+i=0
+while [ ! -e /tmp/.X11-unix/X0 ] && [ "${i}" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+if [ ! -e /tmp/.X11-unix/X0 ]; then
+    echo "installer-launcher: Xorg no arrancó a tiempo, ver ${XORG_LOG}" >&2
+    cat "${XORG_LOG}" >&2 || true
+    exit 1
+fi
+
+export DISPLAY=:0
+export QT_AUTO_SCREEN_SCALE_FACTOR=1
+
+# root (a donde escala pkexec) necesita permiso explícito para
+# conectarse a ESTA sesión X, si no Calamares ni abre ventana. No es
+# una ampliación de privilegios -- root ya tiene root; esto solo le da
+# acceso al display que ya es de este usuario.
+xhost +si:localuser:root >/dev/null 2>&1 || true
+
+# La acción com.github.calamares.calamares.pkexec.run (policy de
+# upstream) pide auth_admin por default -- no hay ninguna cuenta
+# administrativa humana en el medio live para autenticar contra eso.
+# /etc/polkit-1/rules.d/60-likay-installer.rules reemplaza esa
+# autorización, scoped al usuario likay-installer específicamente (ver
+# ese archivo y docs/ROADMAP.md, Etapa 2, para el razonamiento
+# completo).
+pkexec calamares

@@ -112,15 +112,16 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
   El límite de 4GiB-1 de ISO9660 para un archivo único (que en su
   momento obligó a probar sin modelo) está resuelto de raíz — ver
   `0550-fix-casper-udf-detection.chroot` en "Cosas raras" más abajo.
-- **Agente montado — Fase 1 del issue [#2](https://github.com/Kevindelb/Likay-OS/issues/2):**
+- **Agente montado — prototipo de validación, issue [#2](https://github.com/Kevindelb/Likay-OS/issues/2), Fase 1:**
   `vendor/kal-in` (el agente de referencia, sobre el kernel `vendor/kal`)
-  vendorizado y conectado a mano vía `kal-in-backend.service` — todavía
-  no existe una interfaz genérica para montar cualquier agente, eso
-  queda para cuando haya un segundo caso real que la justifique.
-  `kal-in` sigue trayendo su propio `kernel/`/`agent_core`/`frontend`
-  completos (la separación de código *adentro* de kal-in es trabajo
-  futuro de ese repo) — corre standalone, no depende de `vendor/kal`
-  todavía.
+  vendorizado y conectado a mano vía `kal-in-backend.service`, solo para
+  probar kernel→LLM→agente→kiosco de punta a punta. En el diseño final
+  ningún agente va horneado en la ISO — el usuario lo monta en su
+  propia partición del disco, con Likay-OS ya instalado (ver
+  `docs/ROADMAP.md`, decisión del 2026-09-14, Etapa 2). `kal-in` sigue
+  trayendo su propio `kernel/`/`agent_core`/`frontend` completos (la
+  separación de código *adentro* de kal-in es trabajo futuro de ese
+  repo) — corre standalone, no depende de `vendor/kal` todavía.
 - **Limitación conocida:** `kal-in` solo usa `qwen2.5:3b` para su
   clasificador de intención (`conversation_engine`, ver
   `vendor/kal-in/config/config.yaml`) — el modelo de trabajo real
@@ -129,6 +130,22 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
   a fallar sin red. Para hornear también ese modelo, agregar su tag a
   `model-cache/` (mismo mecanismo de hardlinks que ya usa `qwen2.5:3b`)
   o resolverlo como su propio paso — no es parte de esta etapa todavía.
+- **Instalador de Etapa 2 — trabajo en curso, todavía sin probar en
+  QEMU:** una segunda entrada de arranque ("Instalar Likay-OS",
+  `config/bootloaders/isolinux/install.cfg.in`) agrega
+  `likay.mode=installer` a la línea de kernel, lo único que decide si
+  el arranque sigue por `likay-kiosk.service` (Wayland/cage) o por
+  `likay-installer.service` (Xorg mínimo + Calamares) — nunca ambos, y
+  nunca elegible desde una sesión de kiosk ya corriendo. Calamares
+  corre como el usuario técnico `likay-installer` (`DynamicUser=yes`,
+  sin login), autorizado a escalar a root vía una regla de PolicyKit
+  propia scoped a ese usuario específico
+  (`etc/polkit-1/rules.d/60-likay-installer.rules`) — reemplaza el
+  `auth_admin` por defecto de Calamares porque el medio live no tiene
+  ninguna cuenta administrativa humana. Vendorizado desde
+  `calamares-settings-debian` (config oficial del Debian Live Team).
+  Todavía sin conectar: particionado real (dual-boot, LUKS, partición
+  para el agente), Secure Boot/TPM. Ver `docs/ROADMAP.md`, Etapa 2.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 

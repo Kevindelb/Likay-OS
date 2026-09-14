@@ -1,0 +1,22 @@
+// Reemplaza el auth_admin por defecto de Calamares
+// (com.github.calamares.calamares.policy, upstream: allow_active=
+// auth_admin) -- el medio live de Likay-OS no tiene ninguna cuenta
+// administrativa humana con contraseña contra la cual autenticar eso.
+//
+// La autorización real acá no es "quién es el usuario" sino "cómo
+// llegó a ser ese usuario": likay-installer es una identidad técnica
+// (DynamicUser, sin login, sin password, sin sudo, sin grupos admin)
+// en la que solo corre likay-installer.service, que a su vez solo
+// arranca si la máquina bootea con likay.mode=installer en la línea de
+// kernel (ver likay-installer.service, ConditionKernelCommandLine, y
+// config/bootloaders/isolinux/install.cfg.in). kiosk no tiene ningún
+// camino en tiempo de ejecución hacia esta identidad -- la decisión de
+// entrar en modo instalador se toma en el menú de arranque, no dentro
+// de una sesión ya corriendo. Ver docs/ROADMAP.md, Etapa 2, para el
+// razonamiento completo.
+polkit.addRule(function(action, subject) {
+    if (action.id == "com.github.calamares.calamares.pkexec.run" &&
+        subject.user == "likay-installer") {
+        return polkit.Result.YES;
+    }
+});

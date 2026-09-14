@@ -1,0 +1,40 @@
+[Unit]
+Description=Likay-OS installer (Xorg + Calamares)
+# Único gate para entrar en modo instalador: un parámetro de kernel
+# elegido a mano en el menú de arranque (ver
+# config/bootloaders/isolinux/install.cfg.in), nunca algo disparable
+# desde una sesión de kiosk ya corriendo. En un boot normal
+# (likay-kiosk.service) esta condición es falsa y el servicio se
+# saltea (Skipped, no Failed) -- kiosk y el instalador nunca coexisten
+# en el mismo arranque. Ver docs/ROADMAP.md, Etapa 2.
+ConditionKernelCommandLine=likay.mode=installer
+After=systemd-user-sessions.service getty@tty2.service
+Conflicts=getty@tty2.service
+
+[Service]
+Type=simple
+# DynamicUser=yes crea likay-installer como identidad efímera: sin
+# shell de login, sin password, sin grupos administrativos, sin home
+# persistente -- mismo mecanismo que ya usa likay-smoke-test.service en
+# este proyecto. /etc/polkit-1/rules.d/60-likay-installer.rules
+# autoriza a ESTE usuario específico (no a kiosk) para correr Calamares
+# como root -- ver ese archivo para el razonamiento completo.
+DynamicUser=yes
+User=likay-installer
+# PAMName=login: mismo motivo que likay-kiosk.service -- sesión real
+# vía logind para los permisos "uaccess" sobre DRM/input que Xorg
+# necesita para hablarle al hardware directo, sin un seatd separado.
+PAMName=login
+TTYPath=/dev/tty2
+StandardInput=tty
+StandardOutput=journal+console
+StandardError=journal+console
+# NoNewPrivileges NO se pone a propósito, a diferencia de casi
+# cualquier otro .service de este proyecto: el propósito entero de
+# este servicio es escalar a root vía pkexec/Polkit, y NoNewPrivileges
+# se lo bloquea a nivel de kernel. No "arreglar" esto agregándolo.
+ExecStart=/usr/lib/likay/installer-launcher
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+# Reemplaza el "# FIXME" del template original de live-build (nunca se
+# usó hasta Etapa 2 del roadmap). Mismo boot=casper y mismo mecanismo
+# de sustitución de variables que live.cfg.in -- la única diferencia
+# real es el parámetro likay.mode=installer al final del append, que es
+# el único gate que decide si la máquina arranca en modo kiosco normal
+# o en modo instalador (ver likay-installer.service,
+# ConditionKernelCommandLine, y docs/ROADMAP.md, Etapa 2). Esta
+# decisión se toma acá, en el menú de arranque, elegida a mano -- nunca
+# en tiempo de ejecución desde una sesión de kiosk ya corriendo.
+label likay-installer
+	menu label ^Instalar Likay-OS
+	kernel @KERNEL@
+	append initrd=@INITRD@ boot=casper config console=tty0 console=ttyS0,115200n8 likay.mode=installer @LB_BOOTAPPEND_LIVE@

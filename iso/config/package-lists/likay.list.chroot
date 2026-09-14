@@ -109,13 +109,23 @@ isolinux
 casper
 
 # Instalador de Etapa 2 (ver docs/ROADMAP.md) — el paquete Debian trae
-# sus propias dependencias de Qt/X11, no hace falta listarlas a mano.
-# OJO: solo se instala el paquete acá — todavía NO está conectado a
-# ninguna sesión gráfica del kiosco. Calamares sigue usando X11 por
-# defecto en la práctica (no hay evidencia de soporte confiable en
-# compositores wlroots minimalistas como nuestro cage, que además está
-# compilado sin Xwayland a propósito — ver 0350-build-cage-noxwayland.
-# chroot). Probablemente necesite su propia sesión X11 separada del
-# kiosco Wayland — esa decisión queda pendiente, es el paso siguiente
-# después de este.
+# sus propias dependencias de Qt, no hace falta listarlas a mano.
 calamares
+
+# Sesión X11 mínima y dedicada para Calamares (likay-installer.service)
+# — separada por completo del cage/Wayland del kiosco, que sigue
+# compilado sin Xwayland a propósito (ver
+# 0350-build-cage-noxwayland.chroot). Sin escritorio, sin gestor de
+# ventanas: Calamares corre solo, a pantalla completa.
+xserver-xorg
+
+# xhost: necesario para que root (adonde escala pkexec al correr
+# Calamares) pueda conectarse a la sesión X de likay-installer — ver
+# installer-launcher. No es una ampliación de privilegios: root ya
+# tiene root, esto solo le da acceso al display.
+x11-xserver-utils
+
+# polkitd/pkexec: mecanismo de elevación de Calamares. Se lista acá
+# explícito en vez de confiar en que llegue como dependencia transitiva
+# de calamares — mismo criterio que el resto de este archivo.
+polkitd
