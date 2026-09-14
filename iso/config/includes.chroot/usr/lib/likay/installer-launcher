@@ -8,11 +8,19 @@
 # porqué de esa separación).
 set -eu
 
-# vt1, no vt2: mismo motivo que TTYPath=/dev/tty1 en
-# likay-installer.service -- Xorg.wrap exige que la sesión esté en la
-# VT activa, y solo tty1 lo es por default sin un chvt explícito.
+# </dev/tty1 es necesario, no cosmético: Xorg.wrap (el helper setuid
+# que de verdad arranca Xorg) NO consulta logind ni la VT activa para
+# decidir si sos "console user" -- mirando su código fuente
+# (hw/xfree86/xorg-wrapper.c), solo revisa si su propio stdin/stdout/
+# stderr apuntan a un dispositivo TTY real (major number 4). Un job en
+# segundo plano de POSIX shell sin stdin explícito se redirige solo a
+# /dev/null (regla del propio shell, no un bug) -- eso alcanzaba para
+# que Xorg.wrap rechazara el arranque con "Only console users are
+# allowed to run the X server", sin importar en qué VT estuviera
+# (esto costó dos vueltas de prueba en QEMU para encontrarlo del
+# todo -- ver el historial de commits de este archivo).
 XORG_LOG="$(mktemp)"
-Xorg :0 vt1 -nolisten tcp -noreset >"${XORG_LOG}" 2>&1 &
+Xorg :0 vt1 -nolisten tcp -noreset </dev/tty1 >"${XORG_LOG}" 2>&1 &
 XORG_PID=$!
 
 cleanup() {
