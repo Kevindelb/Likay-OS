@@ -107,3 +107,15 @@ isolinux
 # encontrar la raíz. casper depende de initramfs-tools, así que instala
 # ambos.
 casper
+
+# Instalador de Etapa 2 (ver docs/ROADMAP.md) — el paquete Debian trae
+# sus propias dependencias de Qt/X11, no hace falta listarlas a mano.
+# OJO: solo se instala el paquete acá — todavía NO está conectado a
+# ninguna sesión gráfica del kiosco. Calamares sigue usando X11 por
+# defecto en la práctica (no hay evidencia de soporte confiable en
+# compositores wlroots minimalistas como nuestro cage, que además está
+# compilado sin Xwayland a propósito — ver 0350-build-cage-noxwayland.
+# chroot). Probablemente necesite su propia sesión X11 separada del
+# kiosco Wayland — esa decisión queda pendiente, es el paso siguiente
+# después de este.
+calamares

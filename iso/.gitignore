@@ -26,6 +26,7 @@
 # blobs de modelo).
 config/includes.chroot/opt/kal/
 config/includes.chroot/opt/kal-in/
+config/includes.chroot/etc/calamares/
 config/includes.chroot/usr/share/ollama/
 config/includes.chroot/etc/likay-os/
 
