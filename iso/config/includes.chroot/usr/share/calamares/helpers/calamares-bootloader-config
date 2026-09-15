@@ -52,4 +52,21 @@ sed -i "s/#GRUB_DISABLE_OS_PROBER=false/# OS_PROBER re-habilitado por la instala
 # esa causa, así no depende de qué evalúe grub-mkconfig.
 sed -i "s/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR=\"Likay OS\"/" "$CHROOT/etc/default/grub"
 
+# Bug real encontrado en QEMU (2026-09-15), probando la entrada nueva
+# de "modo administrador de agentes": el /etc/default/grub de fábrica
+# trae GRUB_TIMEOUT_STYLE=hidden + GRUB_TIMEOUT=0 -- confirmado en vivo
+# que con esta combinación el menú de GRUB NO se puede alcanzar de
+# ninguna forma (mandando Escape repetidamente vía el monitor de QEMU
+# desde el instante del arranque, directo a Plymouth sin mostrar nada).
+# Esto deja inalcanzable tanto la entrada de dual-boot detectada por
+# os-prober como la nueva de likay.mode=agent-install (ver
+# docs/AGENT_INTERFACE.md) -- sin esto, ese modo entero queda sin forma
+# real de usarse. 5 segundos + menú visible (no hidden) es el mismo
+# criterio que ya usa el menú de syslinux del propio medio live
+# (isolinux.cfg, timeout 50 = 5s).
+sed -i \
+    -e "s/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=menu/" \
+    -e "s/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=5/" \
+    "$CHROOT/etc/default/grub"
+
 chroot "$CHROOT" /usr/sbin/update-grub

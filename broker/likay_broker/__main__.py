@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from likay_broker.socket_server import BrokerServer
+from likay_broker.socket_server import DEFAULT_SOCKET_PATH, BrokerServer
 
 
 def main() -> int:
@@ -16,7 +16,7 @@ def main() -> int:
         format="%(asctime)s likay-agent-broker %(levelname)s %(message)s",
         stream=sys.stdout,
     )
-    logging.info("arrancando -- socket en /run/likay-agent-broker.sock")
+    logging.info("arrancando -- socket en %s", DEFAULT_SOCKET_PATH)
     BrokerServer().serve_forever()
     return 0
 
