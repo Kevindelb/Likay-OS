@@ -70,13 +70,24 @@ def run_helper(operation: str) -> dict:
 # --- pantallas de curses -----------------------------------------------
 
 def draw_message(stdscr, title: str, lines: list[str], footer: str = "Presioná cualquier tecla para continuar...") -> None:
+    """
+    footer="" es la señal (ya usada por cada pantalla de progreso "Paso
+    N/6") de que esto es un estado de "espere", no una pantalla que
+    necesite una tecla -- bug real encontrado en QEMU (2026-09-15): acá
+    se llamaba a stdscr.getch() incondicionalmente, así que cada
+    pantalla de progreso se quedaba esperando una tecla que nadie iba a
+    apretar, ANTES de siquiera invocar el paso real (run_helper nunca
+    llegaba a ejecutarse). Ver docs/AGENT_INTERFACE.md.
+    """
     stdscr.clear()
     stdscr.addstr(1, 2, title, curses.A_BOLD)
     for i, line in enumerate(lines):
         stdscr.addstr(3 + i, 2, line)
-    stdscr.addstr(3 + len(lines) + 1, 2, footer, curses.A_DIM)
+    if footer:
+        stdscr.addstr(3 + len(lines) + 1, 2, footer, curses.A_DIM)
     stdscr.refresh()
-    stdscr.getch()
+    if footer:
+        stdscr.getch()
 
 
 def confirm(stdscr, title: str, lines: list[str]) -> bool:
