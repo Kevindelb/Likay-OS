@@ -150,11 +150,20 @@ cryptsetup
 cryptsetup-initramfs
 keyutils
 
-# unsquashfs: probado en QEMU (2026-09-15) -- con unpackfs.conf ya
-# apuntando al path correcto de casper, la instalación fallaba con
-# "Failed to unpack image" al llegar a copiar el sistema. El módulo
-# unpackfs de Calamares invoca el binario unsquashfs por afuera, no
-# usa una librería -- montar el squashfs al arrancar (lo que ya
-# funciona) solo necesita el módulo squashfs del kernel, nada de este
-# paquete instala eso solo.
+# unsquashfs + rsync: dos rondas de "Failed to unpack image" en QEMU
+# (2026-09-15) con unpackfs.conf ya apuntando al path correcto de
+# casper. Leyendo el código real de unpackfs/main.py (upstream):
+# unsquashfs NO se invoca para copiar -- solo se chequea que exista
+# (shutil.which) antes de montar el squashfs vía el módulo del kernel
+# (lo mismo que ya usa casper al arrancar); la copia de verdad la hace
+# rsync -aHAXSr sobre ese mount. Sin unsquashfs: "Bad unpackfs
+# configuration". Con unsquashfs pero sin rsync: "rsync failed with
+# error code 127" (127 = comando no encontrado, confirmado mirando el
+# diálogo de error completo en la UI, no solo el log). Ninguno de los
+# dos hace falta para arrancar esta ISO (eso usa el módulo squashfs del
+# kernel directo, ni unsquashfs ni rsync) -- por eso nunca se habían
+# instalado en el chroot pese a que este mismo proyecto usa rsync todo
+# el tiempo en auto/build, pero eso corre en el HOST de build, no dentro
+# del chroot que se hornea.
 squashfs-tools
+rsync
