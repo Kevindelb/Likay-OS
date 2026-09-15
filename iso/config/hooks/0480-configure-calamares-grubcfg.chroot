@@ -23,16 +23,27 @@ set -euo pipefail
 # vez de agregarlos directo -- acá hace falta CREAR uno nuevo, así que
 # se hace en el hook, que corre después del rsync.
 GRUBCFG_CONF=/etc/calamares/modules/grubcfg.conf
+EXPECTED_CONTENT='overwrite: false
+keep_distributor: true'
 
+# chroot/ se conserva entre builds a propósito (auto/build no lo borra),
+# así que este hook corre de nuevo sobre un chroot que YA tiene el
+# archivo de la corrida anterior -- tiene que ser idempotente como
+# 0440/0450/0460, no fallar solo porque el archivo ya existe (bug real,
+# encontrado en el primer rebuild después de agregar este hook: fallaba
+# la build entera con "ya existe -- revisar a mano", pese a que el
+# contenido era exactamente el esperado).
 if [ -f "${GRUBCFG_CONF}" ]; then
-    echo "0480: ${GRUBCFG_CONF} ya existe (vendorizado ahora, o build anterior) -- revisar a mano si esto cambió." >&2
-    exit 1
+    if [ "$(cat "${GRUBCFG_CONF}")" = "${EXPECTED_CONTENT}" ]; then
+        echo "0480: grubcfg.conf ya estaba con el contenido esperado (build anterior) -- nada que hacer."
+        exit 0
+    else
+        echo "0480: ${GRUBCFG_CONF} existe con contenido DISTINTO al esperado -- revisar a mano (¿se agregó al vendor, o algo más lo tocó?)." >&2
+        exit 1
+    fi
 fi
 
 mkdir -p "$(dirname "${GRUBCFG_CONF}")"
-cat > "${GRUBCFG_CONF}" <<'EOF'
-overwrite: false
-keep_distributor: true
-EOF
+printf '%s\n' "${EXPECTED_CONTENT}" > "${GRUBCFG_CONF}"
 
 echo "0480: grubcfg.conf creado con keep_distributor: true -- GRUB_DISTRIBUTOR de calamares-bootloader-config ya no se pisa."
