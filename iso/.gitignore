@@ -26,9 +26,15 @@
 # blobs de modelo).
 config/includes.chroot/opt/kal/
 config/includes.chroot/opt/kal-in/
+config/includes.chroot/opt/likay-broker/
 config/includes.chroot/etc/calamares/
 config/includes.chroot/usr/share/ollama/
-config/includes.chroot/etc/likay-os/
+config/includes.chroot/etc/likay-os/*
+# Excepción: active-agent.conf es un archivo fuente real (el default de
+# build, ver docs/AGENT_INTERFACE.md), no una copia generada como
+# model.conf (que sí lo es -- ver auto/build) -- el resto del
+# directorio sigue ignorado.
+!config/includes.chroot/etc/likay-os/active-agent.conf
 
 # Cache persistente de modelos de Ollama entre corridas de build — a
 # propósito FUERA de cache/ (que `lb clean --cache` borra) y de chroot/
@@ -46,3 +52,9 @@ model-cache.disabled-for-test/
 /chroot.headers
 /chroot.packages.install
 /chroot.packages.live
+
+# Bytecode de Python -- aparece al correr/importar cualquier script de
+# .py (p.ej. probando agent-install-helper/agent-install-launcher a
+# mano), nunca autoría a mano.
+__pycache__/
+*.pyc

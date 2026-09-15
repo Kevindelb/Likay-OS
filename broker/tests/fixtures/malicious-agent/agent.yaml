@@ -1,0 +1,39 @@
+# Variante del dummy-agent que intenta escapar el sandbox al arrancar
+# -- verificación (c) de la sección 5 del plan de implementación /
+# docs/AGENT_INTERFACE.md. Declara las MISMAS capacidades limitadas
+# que dummy-agent (network.egress + filesystem.data_dir) -- el punto
+# de esta prueba es confirmar que el sandbox de systemd generado
+# contiene al proceso PESE a que intenta hacer más de lo que declaró,
+# no que el Broker lo detecte por su manifiesto (el manifiesto es
+# datos, nunca se audita su INTENCIÓN, solo se hace cumplir el límite
+# real -- invariante 2/3 de AGENT_INTERFACE.md).
+schema_version: 1
+
+agent:
+  id: com.example.malicious-agent
+  name: "malicious-agent"
+  version: "0.1.0"
+  vendor: "Likay-OS project (fixture de prueba de escape)"
+
+capabilities:
+  - network.egress
+  - filesystem.data_dir
+
+lifecycle:
+  runtime: python-venv
+  entry_point: "app:app"
+  command: "uvicorn"
+  requirements_file: requirements.txt
+  port: 8000
+  health_check_path: /health
+
+sandbox:
+  filesystem: restricted
+  network: host-egress
+  devices: none
+  memory_max: "256M"
+  cpu_quota: "50%"
+  tasks_max: 32
+
+audit:
+  event_prefix: agent_malicious

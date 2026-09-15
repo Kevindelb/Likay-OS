@@ -1,0 +1,38 @@
+#!/bin/bash
+set -euo pipefail
+
+# Usuario de sistema ESTÁTICO para likay-agent-install.service — mismo
+# criterio que 0420-setup-installer.chroot (likay-installer): usuario
+# dedicado, no DynamicUser=yes, sin sudo, sin password. A diferencia
+# de likay-installer, este TUI corre en curses sobre una tty asignada
+# por systemd (TTYPath=/dev/tty1 + PAMName=login en el .service, mismo
+# mecanismo), no necesita Xorg -- por eso sin grupos video/input/render.
+if ! id likay-agent-install >/dev/null 2>&1; then
+    useradd -r -m -d /home/likay-agent-install -s /bin/bash likay-agent-install
+fi
+
+# TUI (sin privilegios, corre como likay-agent-install) y helper
+# (invocado vía pkexec, ver com.likay.agent-install.policy) -- ambos
+# necesitan el bit de ejecución, que includes.chroot no preserva de
+# forma confiable (mismo motivo que 0420 lo hace a mano para
+# installer-launcher).
+chmod 0755 /usr/lib/likay/agent-install-launcher
+chmod 0755 /usr/lib/likay/agent-install-helper
+
+# La entrada nueva de GRUB en el disco YA instalado
+# (config/includes.chroot/etc/grub.d/41_likay_agent_install) -- número
+# 41 (después de 40_custom, el último script de fábrica) para que la
+# entrada aparezca AL FINAL del menú, después de todas las entradas de
+# SO reales (10_linux, 30_os-prober) -- no antes, que sería la
+# ubicación por defecto de un número bajo como 06. Mismo motivo que
+# 0420, el bit de ejecución no sobrevive confiable vía includes.chroot,
+# y /etc/grub.d/* tiene que ser ejecutable para que update-grub lo
+# recoja (grub-mkconfig corre cada script del directorio).
+chmod 0755 /etc/grub.d/41_likay_agent_install
+
+# likay-agent-install.service solo arranca con likay.mode=agent-install
+# en el kernel command line (ver 06_likay_agent_install) -- habilitarlo
+# acá no lo hace correr en un boot normal de kiosco. Mismo motivo que
+# 0420: solo escribe los symlinks de [Install], no hace falta un
+# systemd corriendo de verdad dentro del chroot.
+systemctl enable likay-agent-install.service

@@ -1,0 +1,58 @@
+#!/bin/sh
+set -e
+
+# Agrega una entrada de GRUB al disco YA INSTALADO para arrancar en
+# "modo administrador de agentes" (likay.mode=agent-install) -- mismo
+# concepto que likay.mode=installer en el medio live, pero acá vive en
+# el propio grub.cfg del sistema instalado, no en el menú de syslinux
+# de la ISO. Ver docs/AGENT_INTERFACE.md sección 3 para el mecanismo
+# completo (TUI sin privilegios + helper vía PolicyKit).
+#
+# Corre vía unpackfs igual que el resto del sistema (este archivo vive
+# en el squashfs horneado) -- el update-grub que YA corre dentro de
+# usr/share/calamares/helpers/calamares-bootloader-config lo recoge
+# solo, sin ningún paso nuevo en runtime.
+#
+# Número 41 (después de 40_custom, el último script de fábrica): la
+# entrada aparece AL FINAL del menú, después de todas las entradas de
+# SO reales (10_linux, 30_os-prober) -- nunca antes ni mezclada con
+# ellas.
+#
+# NO se reimplementa la detección de dispositivo/UUID/LUKS a mano --
+# eso es exactamente lo que resuelve prepare_grub_to_access_device()
+# (definida en grub-mkconfig_lib, la misma librería que usa 10_linux,
+# no algo privado de ese script) via cryptomount/search reales según
+# GRUB_ENABLE_CRYPTODISK. Reimplementar esa lógica a mano sería
+# reintroducir, a mano y sin testear, exactamente la clase de bug que
+# ya costó varias vueltas encontrar en el resto de este proyecto.
+prefix="/usr"
+exec_prefix="/usr"
+datarootdir="/usr/share"
+
+. "$pkgdatadir/grub-mkconfig_lib"
+
+# /boot/vmlinuz y /boot/initrd.img son symlinks estables que el propio
+# paquete del kernel mantiene apuntando a la versión actual (confirmado
+# en el chroot horneado: /boot/vmlinuz -> vmlinuz-<versión>) -- evita
+# necesitar version_find_latest()/parseo de nombres de archivo como
+# hace 10_linux, que existe para el caso de MÚLTIPLES kernels
+# instalados a la vez (no nuestro caso: un solo kernel horneado).
+if [ ! -e /boot/vmlinuz ] || [ ! -e /boot/initrd.img ]; then
+    # Sin esto el sistema no arrancaría de ningún modo -- si faltan,
+    # algo más grave ya está roto, mejor no agregar una entrada que
+    # apunte a la nada.
+    exit 0
+fi
+
+CLASS="--class likay --class gnu-linux --class gnu --class os"
+
+cat << EOF
+menuentry 'Instalar/gestionar agente de Likay-OS' ${CLASS} \$menuentry_id_option 'likay-agent-install' {
+	load_video
+	insmod gzio
+$(prepare_grub_to_access_device "${GRUB_DEVICE}" | sed 's/^/\t/')
+	echo	'Arrancando en modo administrador de agentes de Likay-OS...'
+	linux	/boot/vmlinuz root=UUID=${GRUB_DEVICE_UUID} ro ${GRUB_CMDLINE_LINUX} console=tty0 console=ttyS0,115200n8 likay.mode=agent-install
+	initrd	/boot/initrd.img
+}
+EOF

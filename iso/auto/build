@@ -68,6 +68,22 @@ mkdir -p "${INCLUDES_CALAMARES_DIR}"
 rsync -a --delete \
     "${REPO_ROOT}/vendor/calamares-settings-debian/calamares/" "${INCLUDES_CALAMARES_DIR}/"
 
+# broker/: Likay Agent Broker (ver docs/AGENT_INTERFACE.md, V1 de la
+# interfaz genérica de "montar cualquier agente", issue #2 Fase 2).
+# Primera parte de ESTE repo, no un submódulo vendor/ -- se excluye
+# tests/ (y sus fixtures dummy-agent/malicious-agent) del medio live,
+# igual criterio que kal/kal-in excluyendo su propio tests/: no hace
+# falta en tiempo de ejecución, solo para desarrollo del propio Broker.
+INCLUDES_BROKER_DIR="config/includes.chroot/opt/likay-broker"
+echo "==> Copiando broker/ a includes.chroot/opt/likay-broker"
+mkdir -p "${INCLUDES_BROKER_DIR}"
+rsync -a --delete \
+    --exclude='tests' \
+    --exclude='__pycache__' \
+    --exclude='.pytest_cache' \
+    --exclude='*.egg-info' \
+    "${REPO_ROOT}/broker/" "${INCLUDES_BROKER_DIR}/"
+
 echo "==> Copiando config/likay/model.conf a includes.chroot/etc/likay-os/"
 mkdir -p config/includes.chroot/etc/likay-os
 cp config/likay/model.conf config/includes.chroot/etc/likay-os/model.conf

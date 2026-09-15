@@ -1,0 +1,338 @@
+#!/opt/likay-broker/.venv/bin/python3
+"""
+Helper privilegiado de instalación de agentes -- invocado SOLO vía
+"pkexec /usr/lib/likay/agent-install-helper <operación>" (ver
+com.likay.agent-install.policy + 61-likay-agent-install.rules, scoped
+al usuario likay-agent-install).
+
+Expone exactamente 6 operaciones, nombradas, sin argumentos libres --
+NUNCA "ejecutar comando arbitrario" (ver docs/AGENT_INTERFACE.md
+invariante 7). Todas las rutas que toca son fijas/derivadas del propio
+manifiesto ya validado -- nada se interpola en un shell, nada llega
+por un argumento que el TUI (no confiable, aunque corra como usuario
+propio) pudiera manipular más allá del NOMBRE de la operación.
+
+Cada operación revalida el manifiesto desde cero (nunca confía en lo
+que ya mostró/parseó el TUI sin privilegios) -- invariante 2/3.
+
+register_policy NO es una operación de acá -- se resuelve aparte, vía
+el propio socket del Broker con autorización por SO_PEERCRED (ver
+likay_broker/socket_server.py y docs/AGENT_INTERFACE.md sección 5).
+"""
+from __future__ import annotations
+
+import json
+import os
+import pwd
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from likay_broker.manifest import AgentManifest, ManifestError, parse_manifest_file, validate_requirements_path
+
+LIKAY_AGENT_MOUNT = Path("/mnt/likay-agent")
+USB_BUNDLE_LABEL = "LIKAY-BUNDLE"
+USB_BUNDLE_MOUNT = Path("/mnt/likay-bundle-usb")
+MANIFEST_PATH = USB_BUNDLE_MOUNT / "agent.yaml"
+BUNDLE_SRC_DIR = USB_BUNDLE_MOUNT / "src"
+
+OPERATIONS = (
+    "mount_bundle",
+    "validate_manifest",
+    "create_agent",
+    "install_bundle",
+    "generate_unit",
+    "activate_agent",
+)
+
+
+class HelperError(RuntimeError):
+    pass
+
+
+def _run(cmd: list[str]) -> None:
+    """
+    Único punto de ejecución de subprocesos de este archivo -- SIEMPRE
+    una lista de argumentos (nunca shell=True, nunca una string
+    interpolada), así que no hay forma de que un valor derivado del
+    manifiesto (un YAML no confiable) inyecte comandos adicionales.
+    """
+    subprocess.run(cmd, check=True)
+
+
+def _agent_paths(short_id: str) -> dict[str, Path]:
+    base = LIKAY_AGENT_MOUNT / short_id
+    return {
+        "base": base,
+        "home": base / "home",
+        "data": base / "data",
+        "src": base / "src",
+        "venv": base / "venv",
+    }
+
+
+def _load_manifest_for_operation() -> AgentManifest:
+    if not MANIFEST_PATH.is_file():
+        raise HelperError(
+            f"{MANIFEST_PATH} no existe -- ¿corrió mount_bundle primero?"
+        )
+    try:
+        return parse_manifest_file(MANIFEST_PATH)
+    except ManifestError as exc:
+        raise HelperError(f"manifiesto inválido: {exc}") from exc
+
+
+def op_mount_bundle() -> dict:
+    LIKAY_AGENT_MOUNT.mkdir(parents=True, exist_ok=True)
+    likay_agent_dev = Path("/dev/disk/by-label/likay-agent")
+    if not likay_agent_dev.exists():
+        raise HelperError("no se encontró la partición likay-agent (/dev/disk/by-label/likay-agent)")
+    if not os.path.ismount(LIKAY_AGENT_MOUNT):
+        _run(["mount", str(likay_agent_dev), str(LIKAY_AGENT_MOUNT)])
+
+    USB_BUNDLE_MOUNT.mkdir(parents=True, exist_ok=True)
+    usb_dev = Path(f"/dev/disk/by-label/{USB_BUNDLE_LABEL}")
+    if not usb_dev.exists():
+        raise HelperError(
+            f"no se encontró ningún medio con etiqueta {USB_BUNDLE_LABEL!r} -- "
+            "ver docs/AGENT_INTERFACE.md, transporte del bundle en v1."
+        )
+    if not os.path.ismount(USB_BUNDLE_MOUNT):
+        # Solo lectura: el transporte es explícitamente no confiable
+        # (invariante de docs/AGENT_INTERFACE.md) -- no hay ninguna
+        # razón para que este proceso pueda escribir de vuelta al USB.
+        _run(["mount", "-o", "ro", str(usb_dev), str(USB_BUNDLE_MOUNT)])
+
+    if not MANIFEST_PATH.is_file():
+        raise HelperError(f"{MANIFEST_PATH} no existe en el medio montado")
+
+    return {"manifest_path": str(MANIFEST_PATH), "src_dir": str(BUNDLE_SRC_DIR)}
+
+
+def op_validate_manifest() -> dict:
+    manifest = _load_manifest_for_operation()
+    return {
+        "agent_id": manifest.agent_id,
+        "short_id": manifest.short_id,
+        "capabilities": manifest.capabilities,
+        "is_service": manifest.is_service,
+        "lifecycle": manifest.lifecycle,
+        "sandbox": manifest.sandbox,
+    }
+
+
+def op_create_agent() -> dict:
+    manifest = _load_manifest_for_operation()
+    linux_user = f"agent-{manifest.short_id}"
+    paths = _agent_paths(manifest.short_id)
+
+    try:
+        pwd.getpwnam(linux_user)
+        exists = True
+    except KeyError:
+        exists = False
+
+    if not exists:
+        paths["base"].mkdir(parents=True, exist_ok=True)
+        _run([
+            "useradd", "-r", "-m", "-d", str(paths["home"]), "-s", "/usr/sbin/nologin", linux_user,
+        ])
+
+    paths["data"].mkdir(parents=True, exist_ok=True)
+    _run(["chown", "-R", f"{linux_user}:{linux_user}", str(paths["base"])])
+
+    return {"linux_user": linux_user}
+
+
+def op_install_bundle() -> dict:
+    manifest = _load_manifest_for_operation()
+    if not manifest.is_service:
+        raise HelperError(f"{manifest.agent_id} no tiene lifecycle -- no es un servicio instalable")
+
+    linux_user = f"agent-{manifest.short_id}"
+    paths = _agent_paths(manifest.short_id)
+
+    requirements_file = manifest.lifecycle.get("requirements_file")
+    if not requirements_file:
+        raise HelperError("lifecycle.requirements_file falta en el manifiesto")
+    # Revalida el path DE NUEVO acá, contra el src/ real del bundle --
+    # nunca confía en que el TUI ya lo haya validado antes.
+    validate_requirements_path(BUNDLE_SRC_DIR, requirements_file)
+
+    if paths["src"].exists():
+        shutil.rmtree(paths["src"])
+    shutil.copytree(BUNDLE_SRC_DIR, paths["src"], symlinks=False)
+
+    _run(["python3", "-m", "venv", str(paths["venv"])])
+    _run([str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir", "--upgrade", "pip"])
+    _run([
+        str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir",
+        "-r", str(paths["src"] / requirements_file),
+    ])
+
+    _run(["chown", "-R", f"{linux_user}:{linux_user}", str(paths["base"])])
+    return {"installed": True}
+
+
+_SANDBOX_BASE_DIRECTIVES = [
+    "NoNewPrivileges=yes",
+    "ProtectKernelTunables=yes",
+    "ProtectKernelModules=yes",
+    "ProtectControlGroups=yes",
+    "RestrictSUIDSGID=yes",
+    "LockPersonality=yes",
+    "SystemCallFilter=@system-service",
+]
+
+
+def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
+    """
+    Traduce sandbox:/lifecycle: del manifiesto a directivas systemd
+    concretas -- ver la tabla de mapeo en docs/AGENT_INTERFACE.md
+    sección 4. bind_host NUNCA sale del manifiesto (no es un campo
+    legal, ver manifest.py/el schema) -- acá se fuerza --host
+    127.0.0.1 por construcción, sin excepción.
+    """
+    paths = _agent_paths(manifest.short_id)
+    sandbox = manifest.sandbox
+    lifecycle = manifest.lifecycle
+
+    directives = list(_SANDBOX_BASE_DIRECTIVES)
+
+    fs = sandbox.get("filesystem", "none")
+    directives += ["ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes"]
+    if fs == "restricted":
+        directives.append(f"ReadWritePaths={paths['data']}")
+    elif fs != "none":
+        raise HelperError(f"sandbox.filesystem={fs!r} no es un valor legal en v1")
+
+    network = sandbox.get("network", "none")
+    if network == "none":
+        directives.append("PrivateNetwork=yes")
+    elif network != "host-egress":
+        raise HelperError(f"sandbox.network={network!r} no es un valor legal en v1")
+
+    devices = sandbox.get("devices", "none")
+    if devices == "none":
+        directives.append("PrivateDevices=yes")
+    elif devices == "explicit":
+        directives.append("PrivateDevices=no")
+        directives.append("DevicePolicy=closed")
+        for entry in sandbox.get("device_allow", []):
+            directives.append(f"DeviceAllow={entry}")
+    else:
+        raise HelperError(f"sandbox.devices={devices!r} no es un valor legal en v1")
+
+    if "memory_max" in sandbox:
+        directives.append(f"MemoryMax={sandbox['memory_max']}")
+    if "cpu_quota" in sandbox:
+        directives.append(f"CPUQuota={sandbox['cpu_quota']}")
+    if "tasks_max" in sandbox:
+        directives.append(f"TasksMax={sandbox['tasks_max']}")
+
+    port = lifecycle.get("port")
+    command = lifecycle.get("command", "")
+    entry_point = lifecycle.get("entry_point", "")
+    exec_start = f"{paths['venv']}/bin/{command} {entry_point} --host 127.0.0.1 --port {port}"
+
+    env_lines = "\n".join(
+        f"Environment={k}={v}" for k, v in lifecycle.get("env", {}).items()
+    )
+    env_lines += f"\nEnvironment=AGENT_DATA_DIR={paths['data']}"
+
+    directive_lines = "\n".join(directives)
+
+    return f"""[Unit]
+Description=Likay-OS agent -- {manifest.agent_id} (generado por agent-install-helper)
+After=network.target likay-agent-broker.service
+
+[Service]
+Type=simple
+User={linux_user}
+Group={linux_user}
+WorkingDirectory={paths['src']}
+{env_lines}
+ExecStart={exec_start}
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal+console
+StandardError=journal+console
+{directive_lines}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def op_generate_unit() -> dict:
+    manifest = _load_manifest_for_operation()
+    if not manifest.is_service:
+        raise HelperError(f"{manifest.agent_id} no tiene lifecycle -- no es un servicio instalable")
+
+    linux_user = f"agent-{manifest.short_id}"
+    unit_text = _systemd_unit_text(manifest, linux_user)
+    unit_path = Path(f"/etc/systemd/system/likay-agent-{manifest.short_id}.service")
+    unit_path.write_text(unit_text)
+    unit_path.chmod(0o644)
+
+    return {"unit_path": str(unit_path)}
+
+
+def op_activate_agent() -> dict:
+    manifest = _load_manifest_for_operation()
+    unit_name = f"likay-agent-{manifest.short_id}.service"
+
+    # Un solo agente activo a la vez (ver docs/AGENT_INTERFACE.md
+    # "fuera de alcance de v1") -- para cualquier OTRO
+    # likay-agent-*.service que esté activo, lo detiene y deshabilita
+    # antes de activar el nuevo.
+    existing = subprocess.run(
+        ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "likay-agent-*.service"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    for line in existing.splitlines():
+        other_unit = line.split()[0] if line.split() else ""
+        if other_unit and other_unit != unit_name:
+            _run(["systemctl", "disable", "--now", other_unit])
+
+    _run(["systemctl", "daemon-reload"])
+    _run(["systemctl", "enable", "--now", unit_name])
+
+    return {"unit": unit_name, "port": manifest.lifecycle.get("port")}
+
+
+_DISPATCH = {
+    "mount_bundle": op_mount_bundle,
+    "validate_manifest": op_validate_manifest,
+    "create_agent": op_create_agent,
+    "install_bundle": op_install_bundle,
+    "generate_unit": op_generate_unit,
+    "activate_agent": op_activate_agent,
+}
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2 or argv[1] not in OPERATIONS:
+        print(
+            f"uso: {argv[0]} <{'|'.join(OPERATIONS)}>",
+            file=sys.stderr,
+        )
+        return 2
+
+    operation = argv[1]
+    try:
+        result = _DISPATCH[operation]()
+    except HelperError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        print(json.dumps({"error": f"comando falló: {exc}"}), file=sys.stderr)
+        return 1
+
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

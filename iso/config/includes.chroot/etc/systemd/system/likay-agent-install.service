@@ -1,0 +1,40 @@
+[Unit]
+Description=Likay-OS -- instalador de agentes de terceros (TUI, ver docs/AGENT_INTERFACE.md)
+# Único gate para entrar en este modo: un parámetro de kernel elegido a
+# mano en el menú de GRUB del disco YA instalado (ver
+# etc/grub.d/41_likay_agent_install), nunca algo disparable desde una
+# sesión de kiosk ya corriendo -- mismo criterio que
+# likay-installer.service para likay.mode=installer.
+ConditionKernelCommandLine=likay.mode=agent-install
+After=systemd-user-sessions.service getty@tty1.service likay-agent-broker.service
+Wants=likay-agent-broker.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+# Usuario de sistema ESTÁTICO, sin privilegios -- el TUI NUNCA corre
+# como root ni como kiosk (ver docs/AGENT_INTERFACE.md, decisión
+# explícita). Los pasos que sí necesitan root pasan por
+# agent-install-helper vía pkexec, nunca por este proceso directo.
+User=likay-agent-install
+Group=likay-agent-install
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStart=/usr/lib/likay/agent-install-launcher
+Restart=no
+
+# NoNewPrivileges NO se pone a propósito -- mismo motivo exacto que
+# likay-installer.service (ver ese archivo): prctl(PR_SET_NO_NEW_PRIVS)
+# se hereda a TODO proceso hijo y no se puede revertir, así que también
+# anula el bit setuid de pkexec para los hijos de este proceso -- ya lo
+# probamos en QEMU con DynamicUser=yes (que fuerza esto sin avisar) y
+# colgó "pkexec calamares" en silencio para siempre. Este servicio
+# necesita invocar "pkexec agent-install-helper" -- ponerlo acá
+# reproduciría exactamente ese mismo bug ya encontrado y corregido una
+# vez, para el instalador.
+
+[Install]
+WantedBy=multi-user.target

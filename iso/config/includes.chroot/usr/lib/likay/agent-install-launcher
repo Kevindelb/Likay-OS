@@ -1,0 +1,226 @@
+#!/opt/likay-broker/.venv/bin/python3
+"""
+TUI de instalación de agentes -- corre como el usuario sin privilegios
+likay-agent-install (ExecStart de likay-agent-install.service, ver
+docs/AGENT_INTERFACE.md sección 3). NUNCA escala directo: cada paso
+privilegiado se hace vía "pkexec agent-install-helper <operación>",
+autorizado por una acción PolicyKit propia
+(com.likay.agent-install.policy + 61-likay-agent-install.rules) scoped
+específicamente a este usuario.
+
+Secuencia (ver docs/AGENT_INTERFACE.md sección 3 / el plan de
+implementación):
+  1. Confirmación
+  2. helper mount_bundle
+  3. helper validate_manifest -- se muestra el resultado
+  4. Aprobación explícita de cada capability
+  5. Si hay otro agente activo, ofrecer desactivarlo (ver activate_agent,
+     que igual lo hace de forma atómica -- esto es solo para avisar)
+  6-8. helper create_agent / install_bundle / generate_unit
+  9. ESTA TUI (no el helper) llama register_policy directo al Broker,
+     vía su propia credencial Unix -- nunca necesita pkexec para esto.
+  10. helper activate_agent
+  11. Escribir /etc/likay-os/active-agent.conf
+  12. Desmontar, ofrecer reiniciar
+
+curses corre bien sobre consola serie (console=ttyS0,115200n8, ya en
+la línea de arranque de likay.mode=agent-install) con TERM=linux --
+esto es lo que hace posible automatizar esta TUI en QEMU sin VNC/Xorg,
+mismo espíritu que el resto de las pruebas de este proyecto.
+"""
+from __future__ import annotations
+
+import curses
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+HELPER = "/usr/lib/likay/agent-install-helper"
+ACTIVE_AGENT_CONF = Path("/etc/likay-os/active-agent.conf")
+
+sys.path.insert(0, "/opt/likay-broker")
+from likay_broker.client import BrokerClientError, register_policy  # noqa: E402
+
+
+class InstallAborted(Exception):
+    """El usuario canceló, o un paso privilegiado falló -- se corta la instalación, nunca se sigue a medias."""
+
+
+def run_helper(operation: str) -> dict:
+    """
+    Único punto de llamada al helper privilegiado -- SIEMPRE vía
+    pkexec, SIEMPRE con el nombre exacto de una de las 6 operaciones
+    (ver agent-install-helper, OPERATIONS) como único argumento. Nunca
+    se arma un comando distinto ni se interpola nada acá.
+    """
+    proc = subprocess.run(
+        ["pkexec", HELPER, operation],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"código de salida {proc.returncode}"
+        raise InstallAborted(f"{operation} falló: {detail}")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise InstallAborted(f"{operation} devolvió una salida inesperada: {exc}") from exc
+
+
+# --- pantallas de curses -----------------------------------------------
+
+def draw_message(stdscr, title: str, lines: list[str], footer: str = "Presioná cualquier tecla para continuar...") -> None:
+    stdscr.clear()
+    stdscr.addstr(1, 2, title, curses.A_BOLD)
+    for i, line in enumerate(lines):
+        stdscr.addstr(3 + i, 2, line)
+    stdscr.addstr(3 + len(lines) + 1, 2, footer, curses.A_DIM)
+    stdscr.refresh()
+    stdscr.getch()
+
+
+def confirm(stdscr, title: str, lines: list[str]) -> bool:
+    stdscr.clear()
+    stdscr.addstr(1, 2, title, curses.A_BOLD)
+    for i, line in enumerate(lines):
+        stdscr.addstr(3 + i, 2, line)
+    stdscr.addstr(3 + len(lines) + 1, 2, "[y] continuar    [n/Esc] cancelar", curses.A_DIM)
+    stdscr.refresh()
+    while True:
+        ch = stdscr.getch()
+        if ch in (ord("y"), ord("Y")):
+            return True
+        if ch in (ord("n"), ord("N"), 27):
+            return False
+
+
+def approve_capabilities(stdscr, agent_id: str, capabilities: list[str]) -> list[str]:
+    """
+    Aprobación explícita, una por una -- ver docs/AGENT_INTERFACE.md
+    sección 2 ("Una capacidad es una declaración de intención del
+    agente -- no una concesión automática"). Devuelve solo las
+    aprobadas; el usuario puede rechazar capacidades individuales sin
+    cancelar la instalación entera.
+    """
+    approved: list[str] = []
+    for i, cap in enumerate(capabilities):
+        stdscr.clear()
+        stdscr.addstr(1, 2, f"Aprobación de capacidades -- {agent_id}", curses.A_BOLD)
+        stdscr.addstr(3, 2, f"({i + 1}/{len(capabilities)}) ¿Otorgar esta capacidad?")
+        stdscr.addstr(5, 4, cap, curses.A_BOLD | curses.A_REVERSE)
+        stdscr.addstr(7, 2, "[y] otorgar    [n] denegar (el agente sigue instalándose sin ella)", curses.A_DIM)
+        stdscr.refresh()
+        while True:
+            ch = stdscr.getch()
+            if ch in (ord("y"), ord("Y")):
+                approved.append(cap)
+                break
+            if ch in (ord("n"), ord("N")):
+                break
+    return approved
+
+
+def check_existing_agent(stdscr) -> None:
+    """
+    Un solo agente activo a la vez (ver docs/AGENT_INTERFACE.md, fuera
+    de alcance de v1) -- activate_agent ya lo hace cumplir de forma
+    atómica (desactiva cualquier OTRO likay-agent-*.service antes de
+    activar el nuevo), esta pantalla es solo para avisarle al usuario
+    de antemano, no una acción en sí.
+    """
+    result = subprocess.run(
+        ["systemctl", "list-units", "--type=service", "--no-legend", "likay-agent-*.service"],
+        capture_output=True, text=True,
+    )
+    existing = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
+    if existing:
+        draw_message(
+            stdscr, "Agente existente detectado",
+            [f"Ya hay un agente activo: {existing[0]}",
+             "Likay-OS soporta un solo agente activo a la vez.",
+             "El agente existente se va a desactivar al confirmar la instalación."],
+        )
+
+
+def main(stdscr) -> int:
+    curses.curs_set(0)
+
+    if not confirm(
+        stdscr, "Instalador de agentes de Likay-OS",
+        ["Vas a instalar un agente de terceros sobre este sistema.",
+         "El transporte (USB) no es una frontera de seguridad -- la",
+         "seguridad viene del manifiesto validado, tu aprobación",
+         "explícita de capacidades, y el sandbox del sistema."],
+    ):
+        return 1
+
+    try:
+        draw_message(stdscr, "Paso 1/6", ["Montando la partición likay-agent y el bundle USB..."], footer="")
+        run_helper("mount_bundle")
+
+        manifest = run_helper("validate_manifest")
+        agent_id = manifest["agent_id"]
+        short_id = manifest["short_id"]
+        capabilities = manifest["capabilities"]
+        lifecycle = manifest.get("lifecycle") or {}
+
+        if not confirm(
+            stdscr, f"Manifiesto validado: {agent_id}",
+            [f"id:        {agent_id}",
+             f"puerto:    {lifecycle.get('port', '(no es un servicio)')}",
+             f"capacidades pedidas: {len(capabilities)}",
+             "", "¿Continuar con la instalación?"],
+        ):
+            return 1
+
+        approved = approve_capabilities(stdscr, agent_id, capabilities)
+
+        check_existing_agent(stdscr)
+
+        if not confirm(stdscr, "Confirmación final", [
+            f"Se va a instalar '{agent_id}' con {len(approved)} capacidad(es) aprobada(s).",
+            "Esto va a crear un usuario de sistema dedicado y un",
+            "servicio systemd sandboxeado. ¿Confirmás?",
+        ]):
+            return 1
+
+        draw_message(stdscr, "Paso 2/6", ["Creando el usuario Linux dedicado del agente..."], footer="")
+        created = run_helper("create_agent")
+        linux_user = created["linux_user"]
+
+        draw_message(stdscr, "Paso 3/6", ["Copiando el código e instalando dependencias...",
+                                            "(esto puede tardar unos minutos)"], footer="")
+        run_helper("install_bundle")
+
+        draw_message(stdscr, "Paso 4/6", ["Generando la unidad systemd sandboxeada..."], footer="")
+        run_helper("generate_unit")
+
+        draw_message(stdscr, "Paso 5/6", ["Registrando las capacidades aprobadas en el Broker..."], footer="")
+        try:
+            register_policy(agent_id=agent_id, linux_user=linux_user, capabilities=approved)
+        except BrokerClientError as exc:
+            raise InstallAborted(f"no se pudo registrar la política en el Broker: {exc}") from exc
+
+        draw_message(stdscr, "Paso 6/6", ["Activando el servicio del agente..."], footer="")
+        activated = run_helper("activate_agent")
+        port = activated.get("port")
+
+        if port:
+            ACTIVE_AGENT_CONF.parent.mkdir(parents=True, exist_ok=True)
+            ACTIVE_AGENT_CONF.write_text(f"AGENT_URL=http://127.0.0.1:{port}\n")
+
+        draw_message(
+            stdscr, "Instalación completa",
+            [f"'{agent_id}' está instalado y activo como {linux_user}.",
+             "Reiniciá para volver al modo kiosco normal."],
+            footer="Presioná cualquier tecla para salir...",
+        )
+        return 0
+
+    except InstallAborted as exc:
+        draw_message(stdscr, "Instalación cancelada", [str(exc)], footer="Presioná cualquier tecla para salir...")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(curses.wrapper(main))

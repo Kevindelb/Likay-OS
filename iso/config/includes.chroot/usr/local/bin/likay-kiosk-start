@@ -6,8 +6,17 @@
 # "conexión rechazada" mientras kal todavía está importando chromadb/etc.
 set -euo pipefail
 
+# AGENT_URL viene de /etc/likay-os/active-agent.conf -- default de
+# build apuntando a kal-in (127.0.0.1:8000), sobreescrito si el usuario
+# instaló otro agente vía agent-install-launcher (ver
+# docs/AGENT_INTERFACE.md). No hardcodear el puerto acá: un mismo
+# kiosco tiene que poder abrir cualquier agente que esté activo, no
+# solo kal-in.
+# shellcheck disable=SC1091
+source /etc/likay-os/active-agent.conf
+
 for _ in $(seq 1 60); do
-    if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
+    if curl -fsS "${AGENT_URL}/" >/dev/null 2>&1; then
         break
     fi
     sleep 1
@@ -47,4 +56,4 @@ touch "${PROFILE_DIR}/.app"
 # Xwayland — ver el hook 0350-build-cage-noxwayland.chroot). Arrancamos
 # nuestro propio bus de sesión con dbus-run-session, que no necesita
 # X11 para nada.
-exec dbus-run-session -- cage -- epiphany --application-mode --profile="${PROFILE_DIR}" http://127.0.0.1:8000
+exec dbus-run-session -- cage -- epiphany --application-mode --profile="${PROFILE_DIR}" "${AGENT_URL}"

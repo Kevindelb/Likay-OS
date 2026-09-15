@@ -1,0 +1,35 @@
+# Agente externo de mentira -- verificación (b) de la sección 5 del
+# plan de implementación / docs/AGENT_INTERFACE.md. A propósito pide
+# un set de capacidades DISTINTO al de kal-in (sin gpu.compute ni
+# llm.local) para probar que la unidad systemd generada realmente
+# difiere según el manifiesto, no solo que "algo arrancó bien".
+schema_version: 1
+
+agent:
+  id: com.example.dummy-agent
+  name: "dummy-agent"
+  version: "0.1.0"
+  vendor: "Likay-OS project (fixture de prueba)"
+
+capabilities:
+  - network.egress
+  - filesystem.data_dir
+
+lifecycle:
+  runtime: python-venv
+  entry_point: "app:app"
+  command: "uvicorn"
+  requirements_file: requirements.txt
+  port: 8000
+  health_check_path: /health
+
+sandbox:
+  filesystem: restricted
+  network: host-egress
+  devices: none
+  memory_max: "256M"
+  cpu_quota: "50%"
+  tasks_max: 32
+
+audit:
+  event_prefix: agent_dummy

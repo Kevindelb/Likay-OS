@@ -1,0 +1,25 @@
+// Reemplaza el auth_admin por defecto de com.likay.agent.install (ver
+// com.likay.agent-install.policy) por lo mismo que ya usa
+// 60-likay-installer.rules para el instalador: el sistema instalado
+// de Likay-OS no tiene, en este modo de arranque, ninguna cuenta
+// administrativa humana con contraseña contra la cual autenticar eso.
+//
+// Misma lógica de autorización que el instalador (ver el comentario
+// de 60-likay-installer.rules para el razonamiento completo): la
+// pregunta real no es "quién es el usuario" sino "cómo llegó a ser
+// ese usuario". likay-agent-install es un usuario de sistema ESTÁTICO
+// (useradd -r, sin login/password/sudo -- 0425-setup-agent-install.chroot)
+// en el que solo corre likay-agent-install.service, que a su vez solo
+// arranca si el disco YA instalado bootea con likay.mode=agent-install
+// en la línea de kernel (ver likay-agent-install.service,
+// ConditionKernelCommandLine, y etc/grub.d/41_likay_agent_install).
+// kiosk no tiene ningún camino en tiempo de ejecución hacia esta
+// identidad -- la decisión de entrar en este modo se toma en el menú
+// de GRUB, nunca dentro de una sesión ya corriendo. Ver
+// docs/AGENT_INTERFACE.md, invariante 1.
+polkit.addRule(function(action, subject) {
+    if (action.id == "com.likay.agent.install" &&
+        subject.user == "likay-agent-install") {
+        return polkit.Result.YES;
+    }
+});

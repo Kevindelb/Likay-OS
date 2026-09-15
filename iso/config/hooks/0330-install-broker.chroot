@@ -1,0 +1,30 @@
+#!/bin/bash
+# Instala el Likay Agent Broker desde /opt/likay-broker (código
+# copiado ahí por auto/build, host, antes de `lb build` -- ver ese
+# script), mismo patrón exacto que 0300-install-kal.chroot/
+# 0320-install-kal-in.chroot, para el Broker en vez de un agente.
+#
+# Ver docs/AGENT_INTERFACE.md para qué es el Broker -- V1 de la
+# interfaz genérica de "montar cualquier agente" (issue #2, Fase 2).
+set -euo pipefail
+
+# Idempotente, mismo motivo que 0300/0320.
+if ! id likay-broker >/dev/null 2>&1; then
+    useradd -r -m -d /opt/likay-broker-home -s /bin/false likay-broker
+fi
+
+python3 -m venv /opt/likay-broker/.venv
+/opt/likay-broker/.venv/bin/pip install --no-cache-dir --upgrade pip
+/opt/likay-broker/.venv/bin/pip install --no-cache-dir -e /opt/likay-broker
+
+# policy.json y audit.log viven fuera de /opt/likay-broker a propósito
+# (/var/lib, /var/log -- convención estándar de estado runtime vs.
+# código de la aplicación), pero se crean acá para que el directorio
+# ya exista con el dueño correcto antes del primer arranque del
+# servicio -- ver likay_broker/policy_store.py y audit.py, que de
+# todos modos crean el directorio si falta (mkdir(parents=True,
+# exist_ok=True)), esto es solo para que el dueño sea correcto desde
+# el vamos.
+mkdir -p /var/lib/likay-agent-broker /var/log/likay-agent-broker
+chown -R likay-broker:likay-broker /opt/likay-broker /opt/likay-broker-home \
+    /var/lib/likay-agent-broker /var/log/likay-agent-broker

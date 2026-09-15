@@ -1,0 +1,50 @@
+[Unit]
+Description=Likay Agent Broker -- Access Manager de v1 para agentes montados (ver docs/AGENT_INTERFACE.md)
+After=network.target
+# Corre tanto en boot normal de kiosco como en likay.mode=agent-install
+# -- el TUI/helper de ese modo necesitan hablarle para register_policy
+# (ver la sección de secuencia del TUI en docs/AGENT_INTERFACE.md). Solo
+# se saltea en likay.mode=installer, donde no hay ningún agente que
+# mediar todavía (mismo criterio que kal-in-backend.service).
+ConditionKernelCommandLine=!likay.mode=installer
+
+[Service]
+Type=simple
+User=likay-broker
+Group=likay-broker
+WorkingDirectory=/opt/likay-broker
+# RuntimeDirectory= crea /run/likay-agent-broker/ con el dueño correcto
+# ANTES de ExecStart -- ver likay_broker/socket_server.py,
+# DEFAULT_SOCKET_PATH = /run/likay-agent-broker/broker.sock. Un usuario
+# sin privilegios no puede crear archivos directo en /run/ (0755,
+# root:root) -- por eso el socket vive en un subdirectorio propio, no
+# directo en /run/likay-agent-broker.sock.
+RuntimeDirectory=likay-agent-broker
+RuntimeDirectoryMode=0755
+ExecStart=/opt/likay-broker/.venv/bin/python -m likay_broker
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal+console
+StandardError=journal+console
+
+# Mismo endurecimiento base que se exige a TODO agente instalado (ver
+# la tabla "siempre, todo agente" en docs/AGENT_INTERFACE.md sección 4)
+# -- el Broker es código de primera parte, pero no hay razón para que
+# corra con menos límites que lo que él mismo le exige a un agente de
+# terceros.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# ReadWritePaths, no ProtectSystem=strict a secas: el Broker necesita
+# escribir su propia política y su propio log de auditoría.
+ReadWritePaths=/var/lib/likay-agent-broker /var/log/likay-agent-broker
+
+[Install]
+WantedBy=multi-user.target

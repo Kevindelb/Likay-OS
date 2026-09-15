@@ -17,7 +17,10 @@ set -euo pipefail
 #     misma clave vía crypttab) -- SIN mountPoint a propósito, para que
 #     Calamares la cree pero no la toque más: es la partición donde el
 #     usuario instala su propio agente después (kal-in u otro), issue
-#     #2 Fase 2, todavía sin diseñar el mecanismo exacto de montaje. Se
+#     #2 Fase 2. Mecanismo de montaje ya diseñado e implementado --
+#     ver docs/AGENT_INTERFACE.md y agent-install-launcher/
+#     agent-install-helper (monta /dev/disk/by-label/likay-agent bajo
+#     demanda, en el modo de arranque likay.mode=agent-install). Se
 #     cifra igual que root porque el roadmap ya establece que LUKS no
 #     es opcional en esta etapa justamente por los tokens/credenciales
 #     que un agente puede llegar a guardar ahí -- no hay razón para
