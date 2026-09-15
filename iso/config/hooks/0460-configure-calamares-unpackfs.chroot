@@ -1,0 +1,43 @@
+#!/bin/bash
+set -euo pipefail
+
+# Probado en QEMU (2026-09-15): la instalación completa (disco vacío,
+# passphrase de LUKS, usuario, hasta clickear "Install") avanzaba bien
+# hasta fallar con "Installation failed: Bad unpackfs configuration".
+#
+# unpackfs.conf vendorizado (calamares-settings-debian) apunta a
+# /run/live/medium/live/filesystem.squashfs -- la convención de
+# live-build/live-boot (Debian). Nosotros usamos casper (Ubuntu), que
+# monta el medio en /cdrom y deja el squashfs real en
+# /cdrom/casper/filesystem.squashfs (mismo path que ya conocíamos del
+# bug de UDF en 0550-fix-casper-udf-detection.chroot -- /cdrom se
+# mantiene montado durante toda la sesión live, kiosco o instalador,
+# es el mismo boot).
+UNPACKFS_CONF=/etc/calamares/modules/unpackfs.conf
+
+if ! [ -f "${UNPACKFS_CONF}" ]; then
+    echo "0460: no existe ${UNPACKFS_CONF} -- ¿corrió el rsync de vendor/calamares-settings-debian en auto/build?" >&2
+    exit 1
+fi
+
+python3 - "${UNPACKFS_CONF}" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+old = 'source: "/run/live/medium/live/filesystem.squashfs"'
+new = 'source: "/cdrom/casper/filesystem.squashfs"'
+
+with open(path) as f:
+    content = f.read()
+
+if new in content:
+    print("0460: unpackfs.conf ya apuntaba a casper (build anterior) -- nada que hacer.")
+elif old in content:
+    content = content.replace(old, new, 1)
+    with open(path, "w") as f:
+        f.write(content)
+    print("0460: unpackfs.conf corregido para apuntar a /cdrom/casper/filesystem.squashfs (casper, no live-build).")
+else:
+    print(f"0460: no se encontró '{old}' en {path} -- ¿cambió el vendorizado? Revisar a mano.", file=sys.stderr)
+    sys.exit(1)
+PYEOF
