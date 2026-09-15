@@ -306,8 +306,22 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     el Likay-OS instalado sigue siendo kiosco o se vuelve un sistema
     "normal" es una pregunta de diseño todavía sin resolver (issue
     #1), no algo para decidir de paso acá.
-  - **Dual-boot — probado parcialmente, bloqueado por un crash real de
-    Calamares (2026-09-14):** con un disco de prueba armado a mano con
+  - **Dual-boot — funciona hoy, vía "Manual partitioning"
+    (2026-09-15):** con el mismo disco de prueba (NTFS real +
+    5GiB libres), seleccionar "Manual partitioning" en vez de
+    "Replace a partition" abre un editor de particiones completo
+    (tabla `Name`/`File System`/`Label`/`Mount Point`/`Size`, no el
+    `QListView` roto) — seleccionar "Free Space", "Create", elegir
+    `ext4` + mount point `/`, confirma sin ningún error: queda
+    `/dev/vda1` (NTFS, sin tocar) + `New Partition` (ext4, `/`, 5GiB)
+    con bootloader apuntando al MBR de `vda`. Un usuario puede lograr
+    dual-boot real hoy mismo por este camino, sin depender de que
+    Calamares arregle el bug de abajo — solo el camino AUTOMÁTICO
+    ("Replace a partition"/probablemente "Alongside" también, no
+    confirmado) está roto.
+  - **Bug real de Calamares en el camino automático — probado
+    parcialmente, bloqueado (2026-09-14):** con un disco de prueba
+    armado a mano con
     una partición NTFS real (`parted` + `mkfs.ntfs` directo sobre un
     archivo, sin loop device ni root — ver nota al final de "Probar en
     QEMU"), Calamares detecta bien la partición (`vda1: 35.00 GiB
