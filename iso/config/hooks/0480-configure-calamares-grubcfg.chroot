@@ -1,0 +1,38 @@
+#!/bin/bash
+set -euo pipefail
+
+# El menú de GRUB seguía diciendo "Debian" en hardware real pese a
+# hardcodear GRUB_DISTRIBUTOR en calamares-bootloader-config -- causa
+# real encontrada inspeccionando el disco de una instalación de prueba
+# con debugfs (2026-09-15, sin necesidad de arrancarlo): la secuencia
+# de Calamares corre "bootloader-config" (nuestro script) y DESPUÉS
+# "grubcfg", un módulo propio de Calamares que reescribe
+# GRUB_DISTRIBUTOR tomándolo de branding.desc (bootloaderEntryName:
+# Debian) salvo que se le pase keep_distributor: true -- documentado
+# literal en su propio schema para exactamente este caso ("Use this if
+# the GRUB_DISTRIBUTOR setting in the file is 'smart' in some way").
+#
+# Este archivo NO puede vivir directo en includes.chroot/etc/calamares/
+# (se probó primero así, y no funcionó): auto/build rsyncea
+# vendor/calamares-settings-debian/calamares/ ahí con --delete en CADA
+# build, y grubcfg.conf no existe en ese vendor -- cualquier archivo
+# nuestro que no esté también ahí se borra antes de que el chroot
+# siquiera arranque (confirmado con un segundo install de prueba: el
+# archivo ni llegó a /etc/calamares/modules/ en el chroot final). Mismo
+# motivo por el que 0440/0450/0460 patchean archivos YA vendorizados en
+# vez de agregarlos directo -- acá hace falta CREAR uno nuevo, así que
+# se hace en el hook, que corre después del rsync.
+GRUBCFG_CONF=/etc/calamares/modules/grubcfg.conf
+
+if [ -f "${GRUBCFG_CONF}" ]; then
+    echo "0480: ${GRUBCFG_CONF} ya existe (vendorizado ahora, o build anterior) -- revisar a mano si esto cambió." >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "${GRUBCFG_CONF}")"
+cat > "${GRUBCFG_CONF}" <<'EOF'
+overwrite: false
+keep_distributor: true
+EOF
+
+echo "0480: grubcfg.conf creado con keep_distributor: true -- GRUB_DISTRIBUTOR de calamares-bootloader-config ya no se pisa."

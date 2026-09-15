@@ -1,0 +1,66 @@
+#!/bin/bash
+set -euo pipefail
+
+# El paquete plymouth-theme-ubuntu-text hornea el nombre de distro a
+# fuego adentro de su propio .plymouth (título estático, calculado UNA
+# VEZ en el postinst del paquete a partir de /etc/os-release/lsb_release
+# -- no se recalcula en cada boot). Encontrado en hardware real
+# (2026-09-15): la pantalla de arranque decía "Ubuntu 26.04" -- técnico
+# y correcto (nuestra base ES Ubuntu resolute) pero inconsistente con
+# ser Likay-OS, y además contradecía el propio menú de GRUB, que en la
+# misma prueba mostró "Debian GNU/Linux" para la misma instalación (ver
+# el fix de GRUB_DISTRIBUTOR en calamares-bootloader-config) -- dos
+# nombres distintos, ninguno "Likay OS", para el mismo sistema.
+THEME_FILE=/usr/share/plymouth/themes/ubuntu-text/ubuntu-text.plymouth
+
+if ! [ -f "${THEME_FILE}" ]; then
+    echo "0470: no existe ${THEME_FILE} -- ¿cambió el paquete plymouth-theme-ubuntu-text?" >&2
+    exit 1
+fi
+
+if grep -q '^title=Likay OS$' "${THEME_FILE}"; then
+    echo "0470: ubuntu-text.plymouth ya estaba rebrandeado (build anterior) -- nada que hacer."
+else
+    sed -i 's/^title=.*/title=Likay OS/' "${THEME_FILE}"
+    echo "0470: título de la pantalla de arranque (plymouth, tema ubuntu-text) cambiado a 'Likay OS'."
+fi
+
+# El fondo morado (`black=0x2c001e`, el "Aubergine" de Ubuntu -- ese
+# campo es el color de FONDO pese al nombre "black") es tan reconocible
+# como el nombre en sí -- pedido explícito del usuario (2026-09-15) de
+# no parecer "Ubuntu con otro nombre". Cambiado al mismo gris carbón
+# que ya usa el kiosco real (--bg de vendor/kal-in/frontend/style.css)
+# para que la pantalla de arranque se funda con el kiosco al que llega
+# después, en vez de saltar de un color a otro. brown/blue (colores del
+# spinner/progreso) se dejan sin tocar por ahora -- si tras probar
+# siguen leyéndose "violetas", ajustar acá también.
+if grep -q '^black=0x14181c$' "${THEME_FILE}"; then
+    echo "0470: color de fondo ya estaba rebrandeado (build anterior) -- nada que hacer."
+else
+    sed -i 's/^black=.*/black=0x14181c/' "${THEME_FILE}"
+    echo "0470: fondo de la pantalla de arranque (plymouth) cambiado del morado de Ubuntu a #14181c."
+fi
+
+# El título de plymouth de arriba es solo UN lugar donde aparecía
+# "Ubuntu" -- pedido explícito del usuario (2026-09-15) de que TAMPOCO
+# aparezca durante la carga. En vez de perseguir cada mensaje suelto uno
+# por uno (systemd imprime "Welcome to <PRETTY_NAME>!" temprano en el
+# boot antes de que plymouth cubra toda la pantalla; lsb_release,
+# hostnamectl, y cualquier otra herramienta también lo leen), se corrige
+# en la raíz: /etc/os-release, que es de donde sale ese texto. Se tocan
+# solo NAME/PRETTY_NAME (las cadenas que se MUESTRAN) -- ID/ID_LIKE/
+# VERSION_CODENAME/UBUNTU_CODENAME quedan como "ubuntu"/"resolute" a
+# propósito, sin tocar: son los que usan apt, systemd (ConditionOSRelease
+# en unidades de terceros) y detección de hardware para decisiones de
+# compatibilidad reales, no solo mostrar texto -- cambiarlos podría
+# romper algo con cero beneficio visual.
+OS_RELEASE=/etc/os-release
+if grep -q '^NAME="Likay OS"$' "${OS_RELEASE}"; then
+    echo "0470: os-release ya estaba rebrandeado (build anterior) -- nada que hacer."
+else
+    sed -i \
+        -e 's/^PRETTY_NAME=.*/PRETTY_NAME="Likay OS 26.04.1 LTS"/' \
+        -e 's/^NAME=.*/NAME="Likay OS"/' \
+        "${OS_RELEASE}"
+    echo "0470: NAME/PRETTY_NAME de /etc/os-release cambiados a 'Likay OS' (ID/ID_LIKE sin tocar, a propósito)."
+fi

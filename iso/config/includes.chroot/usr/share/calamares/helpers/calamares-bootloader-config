@@ -39,4 +39,17 @@ fi
 # Re-habilitar os-prober para dual-boot (detecta otros sistemas
 # operativos ya instalados) -- mismo sed que el original.
 sed -i "s/#GRUB_DISABLE_OS_PROBER=false/# OS_PROBER re-habilitado por la instalación de Likay-OS:\nGRUB_DISABLE_OS_PROBER=false/g" "$CHROOT/etc/default/grub"
+
+# GRUB_DISTRIBUTOR de fábrica (`( . /etc/os-release && echo ${NAME} )`)
+# se re-evalúa en cada update-grub -- probado a mano contra este mismo
+# chroot y da "Ubuntu" (nuestro /etc/os-release real), pero en hardware
+# real (2026-09-15) el menú terminó diciendo "Debian GNU/Linux" de
+# todos modos (causa exacta todavía sin encontrar -- posiblemente algo
+# del lado del módulo "bootloader" compilado de Calamares, que corre
+# update-grub una segunda vez después de este script). Ninguno de los
+# dos ("Ubuntu" o "Debian") es el nombre real de este sistema de
+# cualquier forma -- hardcodeamos directo "Likay OS" en vez de perseguir
+# esa causa, así no depende de qué evalúe grub-mkconfig.
+sed -i "s/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR=\"Likay OS\"/" "$CHROOT/etc/default/grub"
+
 chroot "$CHROOT" /usr/sbin/update-grub
