@@ -39,6 +39,11 @@ from pathlib import Path
 HELPER = "/usr/lib/likay/agent-install-helper"
 ACTIVE_AGENT_CONF = Path("/etc/likay-os/active-agent.conf")
 
+# Mismo motivo y misma lista que INFRA_UNITS en agent-install-helper --
+# el glob likay-agent-*.service matchea al propio Broker, que no es un
+# agente instalado (bug real encontrado en QEMU 2026-09-16).
+INFRA_UNITS = frozenset({"likay-agent-broker.service", "likay-agent-install.service"})
+
 sys.path.insert(0, "/opt/likay-broker")
 from likay_broker.client import BrokerClientError, register_policy  # noqa: E402
 
@@ -143,7 +148,10 @@ def check_existing_agent(stdscr) -> None:
         ["systemctl", "list-units", "--type=service", "--no-legend", "likay-agent-*.service"],
         capture_output=True, text=True,
     )
-    existing = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
+    existing = [
+        u for line in result.stdout.splitlines()
+        if (u := (line.split()[0] if line.split() else "")) and u not in INFRA_UNITS
+    ]
     if existing:
         draw_message(
             stdscr, "Agente existente detectado",

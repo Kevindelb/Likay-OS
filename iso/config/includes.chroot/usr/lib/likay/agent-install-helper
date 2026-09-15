@@ -46,6 +46,13 @@ OPERATIONS = (
     "activate_agent",
 )
 
+# Unidades de infraestructura que matchean el glob likay-agent-*.service
+# sin ser un agente instalado -- bug real encontrado en QEMU (2026-09-16):
+# sin esta exclusión, activate_agent() deshabilitaba likay-agent-broker.service
+# cada vez que se activaba un agente nuevo, rompiendo el Broker para
+# cualquier agente (incluido el que se acababa de instalar).
+INFRA_UNITS = frozenset({"likay-agent-broker.service", "likay-agent-install.service"})
+
 
 class HelperError(RuntimeError):
     pass
@@ -293,7 +300,7 @@ def op_activate_agent() -> dict:
     ).stdout
     for line in existing.splitlines():
         other_unit = line.split()[0] if line.split() else ""
-        if other_unit and other_unit != unit_name:
+        if other_unit and other_unit != unit_name and other_unit not in INFRA_UNITS:
             _run(["systemctl", "disable", "--now", other_unit])
 
     _run(["systemctl", "daemon-reload"])
