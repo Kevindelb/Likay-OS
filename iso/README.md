@@ -350,6 +350,50 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     revertido (`c2374e5`, `d89ca6e`) — no queda en el build normal.
   - Todavía sin conectar: Secure Boot/TPM (bloqueado por UEFI, issue
     #6, fuera de alcance por ahora). Ver `docs/ROADMAP.md`, Etapa 2.
+  - **Instalación completa de punta a punta, confirmada en QEMU
+    (2026-09-15):** primera vez que se completa un install real (todos
+    los intentos anteriores se habían detenido en la selección de
+    partición). Con un disco virtual de 40G en blanco: "Erase disk" →
+    LUKS2 en ambas particiones (passphrase compartida) → usuario/
+    hostname → resumen → "Install" → progreso real de instalación →
+    **"All done. Debian 14 has been installed on your computer."**
+    Encontrados y corregidos tres bugs reales en el camino (cada uno
+    confirmado con un rebuild+retest en QEMU antes de pasar al
+    siguiente):
+    1. `unpackfs.conf` vendorizado apuntaba a
+       `/run/live/medium/live/filesystem.squashfs` (convención
+       live-build/Debian) en vez del path real de casper,
+       `/cdrom/casper/filesystem.squashfs` — fallaba con "Bad unpackfs
+       configuration". Corregido con el nuevo hook
+       `0460-configure-calamares-unpackfs.chroot`.
+    2. Con el path corregido, seguía fallando ("Failed to unpack
+       image...") — leyendo el código real de `unpackfs/main.py`
+       (upstream), el módulo chequea `shutil.which("unsquashfs")`
+       antes de montar el squashfs. Faltaba `squashfs-tools` en el
+       chroot (nunca había hecho falta para arrancar la ISO en sí, que
+       usa el módulo squashfs del kernel directo).
+    3. Con `squashfs-tools` puesto, mismo error superficial pero
+       distinta causa — el diálogo de error completo de la UI (no solo
+       el log truncado) mostraba el detalle real: `"rsync failed with
+       error code 127"` (127 = comando no encontrado). El módulo
+       `unpackfs` no descomprime con `unsquashfs` — monta el squashfs
+       vía el kernel y copia el contenido con `rsync -aHAXSr`. Faltaba
+       `rsync` en el chroot (usado todo el tiempo por este mismo
+       proyecto en `auto/build`, pero eso corre en el host de build,
+       nunca dentro del chroot horneado). Este fue el fix final.
+  - **Arranque standalone del disco instalado, confirmado en QEMU
+    (2026-09-15):** apagada la VM del instalador, se arrancó una
+    segunda VM completamente nueva usando *solo* el disco resultante
+    (sin `-cdrom`, sin override de `-kernel`/`-initrd` — SeaBIOS → MBR
+    → GRUB reales). Resultado: GRUB pide la passphrase de LUKS de
+    `root` → "Attempting to decrypt master key..." → segundo prompt de
+    LUKS para `likay-agent` → ambas aceptadas → arranca por systemd →
+    llega al mismo frontend de `kal-in` (ventana kiosk de Epiphany,
+    logo "kal", indicador de `qwen2.5:3b`) visto hasta ahora solo en el
+    medio live — esta vez corriendo desde una instalación real en
+    disco. Confirma que nuestro `calamares-bootloader-config` propio
+    (GRUB + `os-prober` + soporte de doble LUKS en el initramfs) deja
+    un sistema instalado que arranca solo, sin nada del medio live.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 
