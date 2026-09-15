@@ -12,12 +12,25 @@ After=kal-in-backend.service systemd-user-sessions.service getty@tty1.service
 Wants=kal-in-backend.service
 Conflicts=getty@tty1.service
 # Defensa en profundidad, no la barrera real (esa es
-# likay-installer.service arrancando solo con likay.mode=installer en
-# el kernel command line): si por lo que sea esta condición y esa se
-# evaluaran mal al mismo tiempo, que el kiosco no arranque en modo
-# instalador es más seguro que lo contrario. Ver docs/ROADMAP.md,
-# Etapa 2.
-ConditionKernelCommandLine=!likay.mode=installer
+# likay-installer.service/likay-agent-install.service arrancando solos
+# con su propio likay.mode=... en el kernel command line): si por lo
+# que sea esta condición y esa se evaluaran mal al mismo tiempo, que el
+# kiosco no arranque en un modo privilegiado es más seguro que lo
+# contrario. Ver docs/ROADMAP.md, Etapa 2 / docs/AGENT_INTERFACE.md.
+#
+# likay.privileged (bare, sin valor), NO "!likay.mode=installer" --
+# bug real encontrado en QEMU (2026-09-15) probando
+# likay.mode=agent-install: "!likay.mode=installer" solo excluye ESE
+# valor específico, "agent-install" es un valor distinto y la
+# condición seguía dando true -- el kiosco arrancaba igual, compitiendo
+# por tty1 con la TUI del modo de agentes. Systemd ORea condiciones
+# repetidas del mismo tipo (ConditionKernelCommandLine=), así que dos
+# negaciones distintas no se pueden combinar con AND agregando una
+# segunda línea -- de ahí este flag compartido, que instalador Y modo
+# de agentes agregan los dos (ver install.cfg.in /
+# 41_likay_agent_install), para poder excluir ambos con una sola
+# condición.
+ConditionKernelCommandLine=!likay.privileged
 
 [Service]
 Type=simple

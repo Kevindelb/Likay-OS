@@ -18,6 +18,15 @@ set -e
 # SO reales (10_linux, 30_os-prober) -- nunca antes ni mezclada con
 # ellas.
 #
+# likay.privileged (bare, sin valor) además de likay.mode=agent-install:
+# marca compartida con likay.mode=installer (ver install.cfg.in) para
+# que likay-kiosk.service/kal-in-backend.service se excluyan de CUALQUIER
+# modo privilegiado con un solo "ConditionKernelCommandLine=!likay.privileged"
+# -- bug real encontrado en QEMU (2026-09-15): con solo
+# "!likay.mode=installer" ahí, el kiosco arrancaba igual acá (mode es
+# "agent-install", no "installer"), compitiendo por la pantalla con la
+# TUI. Ver el comentario más largo en install.cfg.in.
+#
 # NO se reimplementa la detección de dispositivo/UUID/LUKS a mano --
 # eso es exactamente lo que resuelve prepare_grub_to_access_device()
 # (definida en grub-mkconfig_lib, la misma librería que usa 10_linux,
@@ -52,7 +61,7 @@ menuentry 'Instalar/gestionar agente de Likay-OS' ${CLASS} \$menuentry_id_option
 	insmod gzio
 $(prepare_grub_to_access_device "${GRUB_DEVICE}" | sed 's/^/\t/')
 	echo	'Arrancando en modo administrador de agentes de Likay-OS...'
-	linux	/boot/vmlinuz root=UUID=${GRUB_DEVICE_UUID} ro ${GRUB_CMDLINE_LINUX} console=tty0 console=ttyS0,115200n8 likay.mode=agent-install
+	linux	/boot/vmlinuz root=UUID=${GRUB_DEVICE_UUID} ro ${GRUB_CMDLINE_LINUX} console=tty0 console=ttyS0,115200n8 likay.mode=agent-install likay.privileged
 	initrd	/boot/initrd.img
 }
 EOF

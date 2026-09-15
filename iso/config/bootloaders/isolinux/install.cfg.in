@@ -7,7 +7,21 @@
 # ConditionKernelCommandLine, y docs/ROADMAP.md, Etapa 2). Esta
 # decisión se toma acá, en el menú de arranque, elegida a mano -- nunca
 # en tiempo de ejecución desde una sesión de kiosk ya corriendo.
+#
+# likay.privileged (bare, sin valor): marca compartida por CUALQUIER
+# modo de arranque privilegiado (instalador acá, y también
+# likay.mode=agent-install en 41_likay_agent_install del sistema ya
+# instalado) -- bug real encontrado probando el modo de agentes en
+# QEMU (2026-09-15): likay-kiosk.service/kal-in-backend.service solo
+# excluían "!likay.mode=installer", que NO excluye "agent-install" (es
+# un valor distinto) -- terminaban arrancando IGUAL, compitiendo por
+# tty1/la pantalla con la TUI nueva. Systemd ORea condiciones repetidas
+# del mismo tipo (ConditionKernelCommandLine=), así que dos negaciones
+# distintas ("!likay.mode=installer" + "!likay.mode=agent-install") no
+# se pueden combinar con AND directo -- de ahí este flag compartido: un
+# solo "ConditionKernelCommandLine=!likay.privileged" alcanza para
+# excluir cualquier modo privilegiado presente o futuro.
 label likay-installer
 	menu label ^Instalar Likay-OS
 	kernel @KERNEL@
-	append initrd=@INITRD@ boot=casper config console=tty0 console=ttyS0,115200n8 likay.mode=installer @LB_BOOTAPPEND_LIVE@
+	append initrd=@INITRD@ boot=casper config console=tty0 console=ttyS0,115200n8 likay.mode=installer likay.privileged @LB_BOOTAPPEND_LIVE@

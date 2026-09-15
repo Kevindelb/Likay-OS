@@ -6,8 +6,15 @@ Wants=ollama.service
 # esto arrancaba igual en modo instalador, sin ninguna razón para
 # estar corriendo ahí (Calamares no lo necesita, y es superficie
 # innecesaria mientras hay acceso privilegiado al disco de por medio).
-# Mismo mecanismo que likay-kiosk.service. Ver docs/ROADMAP.md, Etapa 2.
-ConditionKernelCommandLine=!likay.mode=installer
+# Mismo mecanismo que likay-kiosk.service.
+#
+# likay.privileged, no "!likay.mode=installer" a secas -- mismo bug
+# real encontrado en QEMU (2026-09-15) con likay.mode=agent-install:
+# ver el comentario largo en likay-kiosk.service para el porqué exacto
+# (systemd ORea condiciones repetidas del mismo tipo, dos negaciones
+# distintas no dan AND). Ver docs/ROADMAP.md, Etapa 2 /
+# docs/AGENT_INTERFACE.md.
+ConditionKernelCommandLine=!likay.privileged
 
 [Service]
 Type=simple
