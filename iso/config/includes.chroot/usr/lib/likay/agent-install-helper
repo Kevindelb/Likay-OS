@@ -27,6 +27,7 @@ import pwd
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from likay_broker.manifest import AgentManifest, ManifestError, parse_manifest_file, validate_requirements_path
@@ -36,6 +37,30 @@ USB_BUNDLE_LABEL = "LIKAY-BUNDLE"
 USB_BUNDLE_MOUNT = Path("/mnt/likay-bundle-usb")
 MANIFEST_PATH = USB_BUNDLE_MOUNT / "agent.yaml"
 BUNDLE_SRC_DIR = USB_BUNDLE_MOUNT / "src"
+
+# Red temporal SOLO para resolver "pip install -r requirements.txt" --
+# encontrado en QEMU (2026-09-16): el sistema instalado no trae ninguna
+# interfaz configurada (ni systemd-networkd con un .network, ni
+# NetworkManager) a propósito, coherente con el diseño "kiosco sin red
+# por defecto" (kal-in es 100% local). Decisión explícita del usuario:
+# la conectividad es una capacidad TEMPORAL del instalador, nunca una
+# propiedad del sistema live normal ni del agente instalado -- se
+# activa acá mismo, dentro de install_bundle, y se apaga en un
+# finally/, gane o pierda el pip install. Jamás se toca
+# sandbox.network del manifiesto (ver _systemd_unit_text): el agente
+# instalado conserva exactamente la política que declaró, sin importar
+# si el instalador tuvo red para bajar sus dependencias.
+_NETWORKD_DIR = Path("/etc/systemd/network")
+_INSTALLER_NETWORK_FILE = _NETWORKD_DIR / "90-likay-agent-install-dhcp.network"
+_INSTALLER_NETWORK_CONTENT = """# Generado por agent-install-helper -- SOLO existe mientras
+# install_bundle está resolviendo dependencias por pip. Ver el
+# comentario largo junto a _NETWORKD_DIR.
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+"""
 
 OPERATIONS = (
     "mount_bundle",
@@ -152,6 +177,39 @@ def op_create_agent() -> dict:
     return {"linux_user": linux_user}
 
 
+def _enable_installer_network(timeout: float = 25.0) -> None:
+    _NETWORKD_DIR.mkdir(parents=True, exist_ok=True)
+    _INSTALLER_NETWORK_FILE.write_text(_INSTALLER_NETWORK_CONTENT)
+    _run(["systemctl", "start", "systemd-networkd.service"])
+    _run(["networkctl", "reload"])
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+            capture_output=True, text=True,
+        )
+        if result.stdout.strip():
+            return
+        time.sleep(1)
+    raise HelperError(
+        "no se pudo obtener una dirección de red (DHCP) a tiempo -- "
+        "install_bundle necesita conectividad temporal para pip install"
+    )
+
+
+def _disable_installer_network() -> None:
+    """
+    Apaga la red del instalador incondicionalmente -- se llama desde un
+    finally/, así que nunca puede dejarse la interfaz arriba por un
+    error a mitad de pip install. Nunca toca la política del agente
+    (sandbox.network sigue viniendo solo del manifiesto).
+    """
+    subprocess.run(["systemctl", "stop", "systemd-networkd.service"], check=False)
+    if _INSTALLER_NETWORK_FILE.exists():
+        _INSTALLER_NETWORK_FILE.unlink()
+
+
 def op_install_bundle() -> dict:
     manifest = _load_manifest_for_operation()
     if not manifest.is_service:
@@ -172,11 +230,19 @@ def op_install_bundle() -> dict:
     shutil.copytree(BUNDLE_SRC_DIR, paths["src"], symlinks=False)
 
     _run(["python3", "-m", "venv", str(paths["venv"])])
-    _run([str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir", "--upgrade", "pip"])
-    _run([
-        str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir",
-        "-r", str(paths["src"] / requirements_file),
-    ])
+
+    # Ventana de red mínima: solo alrededor de los dos pip install que
+    # de verdad la necesitan -- ni la copia del bundle ni la creación
+    # del venv la requieren. Se apaga en el finally pase lo que pase.
+    _enable_installer_network()
+    try:
+        _run([str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir", "--upgrade", "pip"])
+        _run([
+            str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir",
+            "-r", str(paths["src"] / requirements_file),
+        ])
+    finally:
+        _disable_installer_network()
 
     _run(["chown", "-R", f"{linux_user}:{linux_user}", str(paths["base"])])
     return {"installed": True}

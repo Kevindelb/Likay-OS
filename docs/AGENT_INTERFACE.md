@@ -70,6 +70,19 @@ Sandbox (unidades systemd generadas en el momento de instalar) es el
 13. Instalar un agente equivale a ejecutar software de terceros
     (`pip install` incluido) dentro del sandbox — se trata como cadena
     de suministro no confiable, nunca como "solo configuración".
+14. La conectividad de red de `agent-install` es una capacidad
+    **temporal del instalador**, nunca una propiedad de los agentes
+    instalados ni del sistema live normal. El modo normal (kiosco)
+    permanece sin red por defecto. Tras resolver las dependencias del
+    bundle, la red del instalador se apaga antes de continuar con el
+    resto de la instalación (`generate_unit`/`register_policy`/
+    `activate_agent`) — ver `_enable_installer_network`/
+    `_disable_installer_network` en `agent-install-helper`. Ningún
+    agente obtiene red por haber tenido el instalador conectividad
+    para bajar sus dependencias: `sandbox.network` sigue viniendo
+    únicamente del manifiesto. Los bundles con dependencias
+    vendorizadas (`wheels/` locales) permitirán en el futuro
+    instalaciones completamente offline, sin reabrir esta invariante.
 
 ## 1. Identidad
 
