@@ -427,6 +427,96 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     disco. Confirma que nuestro `calamares-bootloader-config` propio
     (GRUB + `os-prober` + soporte de doble LUKS en el initramfs) deja
     un sistema instalado que arranca solo, sin nada del medio live.
+  - **Bug real encontrado en hardware real (2026-09-15): el menú de
+    arranque nunca mostraba "Instalar Likay-OS".** Todo lo de arriba se
+    había probado siempre saltando el menú (inyectando
+    `likay.mode=installer` directo en `-append` de QEMU) — la primera
+    vez que se arrancó por el menú real de verdad, en hardware físico,
+    solo aparecían las dos entradas "Live". Causa: `lb_binary_syslinux`
+    (ver `/usr/lib/live/build/lb_binary_syslinux` línea 211) solo sabe
+    renderizar `live.cfg.in` → `live.cfg` — el nombre está hardcodeado,
+    no es un loop genérico sobre `*.cfg.in`. Nuestro `install.cfg.in`
+    quedaba sin procesar, y el `include install.cfg` de `menu.cfg`
+    apuntaba a un archivo que nunca se creaba — syslinux no avisa nada
+    por un include faltante. `scripts/rebuild-iso-with-fixes.sh` (que
+    de todos modos reconstruye la ISO desde `binary/`) ahora renderiza
+    `install.cfg.in` a mano con el mismo sed que usa
+    `lb_binary_syslinux`, leyendo `KERNEL`/`INITRD`/`LB_BOOTAPPEND_LIVE`
+    del propio `live.cfg` ya renderizado. Confirmado después del fix:
+    las tres entradas aparecen, "Instalar Likay-OS" arranca Calamares
+    correctamente.
+  - **Bug real en el camino "Alongside": nunca aparecía pese a que
+    os-prober detectaba bien Windows (2026-09-15).** Con un disco de
+    prueba con contenido Windows-*ish* más realista (`bootmgr` +
+    `Boot/BCD` con "Windows 10" codificado en UTF-16LE, como un BCD
+    real), os-prober detectaba bien "Windows 10", pero "Install
+    alongside" seguía sin aparecer. Causa, leyendo `ChoicePage.cpp` de
+    Calamares upstream: el botón depende de
+    `PartUtils::canBeResized()`, que necesita que KPMcore lea el
+    espacio libre *dentro* de la partición NTFS existente vía
+    `ntfsresize` (paquete `ntfs-3g`) — una dependencia que
+    `libkpmcore13` solo usa en runtime, nunca declarada en dpkg, así
+    que nunca se había instalado en el medio live. Agregado `ntfs-3g`
+    al package-list. Confirmado después del fix: "Install alongside"
+    aparece, el slider de resize calcula y habilita bien.
+  - **Primera instalación completa en hardware real, dual-boot
+    automático con una distro Linux real (2026-09-15):** laptop con
+    Zorin OS 18.1 ya instalado (ext4, disco GPT) — "Instalación
+    paralela" (Alongside) detectó bien "Zorin OS 18.1 (18)" (código de
+    detección de Linux de os-prober, distinto del camino NTFS/Windows
+    — funcionó de entrada, sin faltarle ningún paquete, ya que
+    `e2fsprogs` es esencial y siempre está presente). Slider calculó un
+    split parejo (`/dev/sda3` reducido a 232GB + partición nueva de
+    232GB para Debian, con nuestro `partitionLayout` root/likay-agent
+    aplicado igual que en "Erase disk"). Install completo, reinicio, y
+    el **GRUB resultante mostró ambas entradas** ("Debian GNU/Linux" +
+    "Zorin OS 18.1 (18) (on /dev/sda3)", con sus respectivos "Advanced
+    options") — confirmado arrancando las dos: Likay-OS llega al kiosco
+    de `kal-in` como siempre, y Zorin sigue arrancando bien después del
+    shrink de partición. Primera prueba real de dual-boot automático
+    fuera de QEMU, con una segunda distro genuina (no un disco NTFS
+    sintético).
+  - **Rebrand de arranque/apagado/GRUB — "Ubuntu"/"Debian" → "Likay
+    OS" (2026-09-15).** Pedido por el usuario tras ver "Ubuntu 26.04"
+    en el splash de Plymouth (arranque Y apagado, mismo campo `title`
+    en el tema `ubuntu-text`) y "Debian GNU/Linux" en el menú de GRUB
+    del mismo sistema recién instalado. Fondo cambiado del morado
+    "Aubergine" de Ubuntu al mismo gris carbón que ya usa el kiosco de
+    `kal-in` (`#14181c`), para continuidad visual. `/etc/os-release`
+    también actualizado (NAME/PRETTY_NAME, sin tocar ID/ID_LIKE —
+    esos los usan apt/systemd para decisiones reales, no solo texto).
+    El menú de GRUB necesitó **tres vueltas hasta la causa real**:
+    hardcodear `GRUB_DISTRIBUTOR` en `calamares-bootloader-config` no
+    alcanzó — un módulo propio de Calamares, `grubcfg` (corre después
+    en la secuencia), lo reescribe desde `branding.desc`
+    (`bootloaderEntryName: Debian`) salvo `keep_distributor: true`
+    (documentado en su propio schema para exactamente este caso). Y
+    ese archivo de config no puede vivir directo en
+    `includes.chroot/etc/calamares/` — `auto/build` rsyncea el vendor
+    ahí con `--delete` en cada build y se lo come; tuvo que ir en un
+    hook (`0480-configure-calamares-grubcfg.chroot`), igual que
+    `0440`/`0450`/`0460` patchean en vez de agregar directo. Confirmado
+    con `debugfs` sobre discos de instalaciones de prueba en QEMU (sin
+    arrancarlos) antes de gastar otra vuelta en hardware real, y
+    finalmente confirmado en hardware real también. Hooks
+    `0470-rebrand-boot-branding.chroot` + `0480-...`. Pendiente,
+    "más adelante": rebrandear el instalador de Calamares en sí (logo +
+    "Debian" en su propia UI, `branding.desc`) — no tocado todavía.
+  - **Limitación conocida, no un bug nuestro: sin el prompt de "retirar
+    el medio" al reiniciar después de instalar, con Ventoy
+    (2026-09-15).** Al terminar el install y reiniciar, no aparece
+    ningún mensaje pidiendo sacar el USB — vuelve a arrancar el mismo
+    medio de instalación. `casper-stop` (`sbin/casper-stop`, el script
+    real de shutdown de casper) SÍ tiene ese prompt normalmente
+    ("Please remove the installation medium, then press ENTER"), pero
+    se salta todo de entrada si `find_iso=` está en `/proc/cmdline` —
+    probablemente lo que Ventoy inyecta al arrancar una ISO por
+    loopback en vez de un USB grabado con `dd` (no hay un dispositivo
+    "expulsable" cuando el medio es un archivo). No confirmado al 100%
+    (no se pudo revisar `/proc/cmdline` en vivo), pero es la explicación
+    más concreta encontrada en el código real. Workaround: interceptar
+    el arranque manualmente (tecla de boot menu) y elegir el disco real
+    en vez del USB.
 
 ## Cosas raras de esta versión de live-build (por qué tantos hooks/parches)
 
