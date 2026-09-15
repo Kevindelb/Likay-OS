@@ -149,3 +149,12 @@ grub-pc
 cryptsetup
 cryptsetup-initramfs
 keyutils
+
+# unsquashfs: probado en QEMU (2026-09-15) -- con unpackfs.conf ya
+# apuntando al path correcto de casper, la instalación fallaba con
+# "Failed to unpack image" al llegar a copiar el sistema. El módulo
+# unpackfs de Calamares invoca el binario unsquashfs por afuera, no
+# usa una librería -- montar el squashfs al arrancar (lo que ya
+# funciona) solo necesita el módulo squashfs del kernel, nada de este
+# paquete instala eso solo.
+squashfs-tools
