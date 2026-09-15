@@ -20,17 +20,30 @@ User=likay-agent-install
 Group=likay-agent-install
 PAMName=login
 TTYPath=/dev/tty1
+# StandardOutput=tty (NO journal+console) -- segundo bug real, mismo
+# síntoma que el de TERM de abajo pero causa distinta (2026-09-15):
+# journal+console multiplexa stdout hacia /dev/console + el journal, no
+# da un file descriptor crudo de terminal -- curses necesita hacer
+# ioctls de verdad (tcsetattr, etc.) sobre EL MISMO dispositivo que usa
+# para stdin, y journal+console no sirve para eso. Con TTYPath=/dev/tty1
+# + StandardInput=tty + StandardOutput=tty, entrada y salida son el
+# mismo fd real de /dev/tty1 -- lo que curses.wrapper() necesita.
+# likay-installer.service/likay-kiosk.service SÍ pueden usar
+# journal+console porque Xorg/cage manejan su propio acceso a
+# VT/DRM directo, nunca a través de stdout -- este es el primer
+# servicio del proyecto donde el programa en sí (no algo que lanza)
+# necesita que stdin/stdout SEAN la terminal.
 StandardInput=tty
-StandardOutput=journal+console
+StandardOutput=tty
+# StandardError sigue en journal+console (no tty) a propósito: un
+# traceback de Python mezclado con el dibujado de curses en la misma
+# tty sería ilegible -- separado, sigue siendo visible por consola
+# serie/journalctl para debug, sin romper la UI real.
 StandardError=journal+console
-# Bug real encontrado en QEMU (2026-09-15): sin esto, curses.wrapper()
-# fallaba con "_curses.error: cbreak() returned ERR" apenas arrancaba
-# la TUI -- systemd con TTYPath= da un fd de tty real, pero NUNCA setea
-# $TERM solo (eso normalmente lo hace un login shell/PAM, que acá no
-# corre -- ExecStart va directo al script Python). Sin $TERM, ncurses
-# no encuentra ninguna entrada de terminfo y ni siquiera cbreak()
-# funciona. "linux" es el valor correcto para una VT de consola Linux
-# de verdad (tty1), que es exactamente lo que TTYPath= da acá.
+# Ver el commit anterior: sin esto, curses.wrapper() fallaba con
+# "_curses.error: cbreak() returned ERR" porque ncurses no encontraba
+# terminfo para $TERM sin setear. "linux" es el valor correcto para
+# una VT de consola Linux de verdad (tty1).
 Environment=TERM=linux
 ExecStart=/usr/lib/likay/agent-install-launcher
 Restart=no
