@@ -23,6 +23,15 @@ TTYPath=/dev/tty1
 StandardInput=tty
 StandardOutput=journal+console
 StandardError=journal+console
+# Bug real encontrado en QEMU (2026-09-15): sin esto, curses.wrapper()
+# fallaba con "_curses.error: cbreak() returned ERR" apenas arrancaba
+# la TUI -- systemd con TTYPath= da un fd de tty real, pero NUNCA setea
+# $TERM solo (eso normalmente lo hace un login shell/PAM, que acá no
+# corre -- ExecStart va directo al script Python). Sin $TERM, ncurses
+# no encuentra ninguna entrada de terminfo y ni siquiera cbreak()
+# funciona. "linux" es el valor correcto para una VT de consola Linux
+# de verdad (tty1), que es exactamente lo que TTYPath= da acá.
+Environment=TERM=linux
 ExecStart=/usr/lib/likay/agent-install-launcher
 Restart=no
 
