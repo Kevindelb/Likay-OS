@@ -28,3 +28,12 @@ python3 -m venv /opt/likay-broker/.venv
 mkdir -p /var/lib/likay-agent-broker /var/log/likay-agent-broker
 chown -R likay-broker:likay-broker /opt/likay-broker /opt/likay-broker-home \
     /var/lib/likay-agent-broker /var/log/likay-agent-broker
+
+# Bug real encontrado probando esto en QEMU (2026-09-15): faltaba este
+# systemctl enable -- la unidad tenía WantedBy=multi-user.target en su
+# [Install], pero includes.chroot no habilita nada solo (mismo motivo
+# que 0420-setup-installer.chroot/0320-install-kal-in.chroot lo hacen
+# a mano). Sin esto, likay-agent-broker.service nunca corría, y
+# `likay_agent_install.service`/register_policy hubieran fallado en
+# silencio al no encontrar el socket.
+systemctl enable likay-agent-broker.service
