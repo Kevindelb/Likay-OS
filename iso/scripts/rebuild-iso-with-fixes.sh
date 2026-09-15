@@ -45,6 +45,53 @@ if [ ! -d binary/casper ]; then
     exit 1
 fi
 
+# Bug real, encontrado en hardware real (2026-09-15): el menú de arranque
+# solo mostraba las dos entradas "Live", nunca "Instalar Likay-OS" —
+# nunca se había probado el menú REAL, solo el modo instalador en sí
+# (arrancado saltando el menú del todo, inyectando likay.mode=installer
+# directo en el -append de QEMU, ver "Probar el modo instalador" en
+# README.md). lb_binary_syslinux (ver /usr/lib/live/build/lb_binary_syslinux
+# línea 211) solo sabe renderizar "live.cfg.in" -> "live.cfg" -- el nombre
+# está hardcodeado, no es un loop genérico sobre *.cfg.in. Nuestro propio
+# install.cfg.in (con @KERNEL@/@INITRD@/@LB_BOOTAPPEND_LIVE@ sin
+# sustituir) queda tal cual, nunca se genera install.cfg -- y el "include
+# install.cfg" de menu.cfg apunta a un archivo que no existe. syslinux no
+# tira ningún error por un include faltante, así que esto pasó
+# desapercibido hasta arrancar en hardware real y mirar el menú con
+# atención. Lo resolvemos acá (no parcheando live-build) con el mismo
+# criterio que el resto de este script: reconstruimos binary.hybrid.iso
+# desde binary/ de todos modos, así que alcanza con renderizar
+# install.cfg.in a mano, con el mismo sed que usa lb_binary_syslinux,
+# antes de ese paso -- leyendo KERNEL/INITRD/LB_BOOTAPPEND_LIVE del propio
+# live.cfg ya renderizado en vez de re-derivar el entorno de live-build,
+# para garantizar que ambas entradas usen exactamente el mismo kernel/
+# initrd/bootappend salvo por likay.mode=installer.
+if [ -f binary/isolinux/install.cfg.in ]; then
+    echo "==> Renderizando install.cfg.in -> install.cfg (lb_binary_syslinux no lo procesa solo)"
+    # Solo el primer stanza de live.cfg (el "live-" normal, no el
+    # "-failsafe") -- awk corta en la primera línea en blanco, que es
+    # justo donde termina ese primer bloque (ver live.cfg.in: cada label
+    # separado por una línea vacía). Nunca usar grep -oP con \K.* acá:
+    # cuando LB_BOOTAPPEND_LIVE está vacío (nuestro caso, sin
+    # --bootappend-live en auto/config) el "match" queda de largo cero al
+    # final de la línea, y grep -oP directamente NO emite esa línea (se
+    # confirmó en vivo: con head -1 terminaba agarrando el append del
+    # stanza equivocado, el failsafe, que sí tiene contenido después del
+    # mismo prefijo) -- silencioso, sin ningún error. El "${var#prefijo}"
+    # de bash no tiene ese problema con sufijos vacíos.
+    FIRST_STANZA="$(awk '/^$/{exit} {print}' binary/isolinux/live.cfg)"
+    KERNEL_PATH="$(echo "${FIRST_STANZA}" | grep -m1 'kernel' | awk '{print $2}')"
+    APPEND_LINE="$(echo "${FIRST_STANZA}" | grep -m1 'append')"
+    INITRD_PATH="${APPEND_LINE#*initrd=}"
+    INITRD_PATH="${INITRD_PATH%% *}"
+    BOOTAPPEND_LIVE="${APPEND_LINE#*console=ttyS0,115200n8 }"
+    sed -e "s|@KERNEL@|${KERNEL_PATH}|g" \
+        -e "s|@INITRD@|${INITRD_PATH}|g" \
+        -e "s|@LB_BOOTAPPEND_LIVE@|${BOOTAPPEND_LIVE}|g" \
+        binary/isolinux/install.cfg.in > binary/isolinux/install.cfg
+    rm -f binary/isolinux/install.cfg.in
+fi
+
 echo "==> Reconstruyendo binary.hybrid.iso con binary/live real (no symlink) + UDF"
 
 # -rf, no -f: binary/live puede ser el symlink original (ln -sfn en
