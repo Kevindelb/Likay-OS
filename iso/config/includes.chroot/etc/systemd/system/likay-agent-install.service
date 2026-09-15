@@ -19,31 +19,33 @@ Type=simple
 User=likay-agent-install
 Group=likay-agent-install
 PAMName=login
+# El instalador es un TUI real: el proceso principal necesita trabajar
+# directamente sobre la VT, a diferencia de likay-installer.service/
+# likay-kiosk.service, donde Xorg/cage manejan su propio acceso a
+# VT/DRM y nunca consumen stdin/stdout para su UI -- por eso esos dos
+# sí pueden usar journal+console sin problema, y este no.
+#
+# Segundo bug real, mismo síntoma que el de TERM de abajo pero causa
+# distinta (2026-09-15): con StandardOutput=journal+console (como en
+# los demás servicios), curses.wrapper() fallaba con "_curses.error:
+# cbreak() returned ERR" -- journal+console multiplexa stdout hacia
+# /dev/console + el journal, no da un descriptor de terminal crudo.
+# StandardInput=tty y StandardOutput=tty conectan la entrada y salida
+# estándar del proceso al TTY que indica TTYPath -- necesario porque
+# curses.wrapper() opera directamente sobre esa terminal.
 TTYPath=/dev/tty1
-# StandardOutput=tty (NO journal+console) -- segundo bug real, mismo
-# síntoma que el de TERM de abajo pero causa distinta (2026-09-15):
-# journal+console multiplexa stdout hacia /dev/console + el journal, no
-# da un file descriptor crudo de terminal -- curses necesita hacer
-# ioctls de verdad (tcsetattr, etc.) sobre EL MISMO dispositivo que usa
-# para stdin, y journal+console no sirve para eso. Con TTYPath=/dev/tty1
-# + StandardInput=tty + StandardOutput=tty, entrada y salida son el
-# mismo fd real de /dev/tty1 -- lo que curses.wrapper() necesita.
-# likay-installer.service/likay-kiosk.service SÍ pueden usar
-# journal+console porque Xorg/cage manejan su propio acceso a
-# VT/DRM directo, nunca a través de stdout -- este es el primer
-# servicio del proyecto donde el programa en sí (no algo que lanza)
-# necesita que stdin/stdout SEAN la terminal.
 StandardInput=tty
 StandardOutput=tty
-# StandardError sigue en journal+console (no tty) a propósito: un
-# traceback de Python mezclado con el dibujado de curses en la misma
-# tty sería ilegible -- separado, sigue siendo visible por consola
-# serie/journalctl para debug, sin romper la UI real.
-StandardError=journal+console
-# Ver el commit anterior: sin esto, curses.wrapper() fallaba con
-# "_curses.error: cbreak() returned ERR" porque ncurses no encontraba
-# terminfo para $TERM sin setear. "linux" es el valor correcto para
-# una VT de consola Linux de verdad (tty1).
+# StandardError SOLO en journal, sin "+console" -- a diferencia de
+# stdout, /dev/console puede terminar siendo la misma VT donde corre
+# curses (tty1 acá), así que "+console" reintroduciría el problema que
+# se busca evitar: un traceback de Python escrito encima de la UI ya
+# dibujada. Para debug: journalctl -u likay-agent-install.service.
+StandardError=journal
+# Sin esto, curses.wrapper() fallaba con "_curses.error: cbreak()
+# returned ERR" porque ncurses no encontraba terminfo para $TERM sin
+# setear. "linux" es el valor correcto para una VT de consola Linux de
+# verdad (tty1).
 Environment=TERM=linux
 ExecStart=/usr/lib/likay/agent-install-launcher
 Restart=no
