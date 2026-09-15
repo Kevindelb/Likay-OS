@@ -167,3 +167,21 @@ keyutils
 # del chroot que se hornea.
 squashfs-tools
 rsync
+
+# ntfs-3g: probando el camino "Alongside" (dual-boot automático) en QEMU
+# con un disco de prueba Windows+NTFS (2026-09-15) -- "Install alongside"
+# nunca aparecía como opción pese a que os-prober SÍ detectaba bien
+# "Windows 10". Leyendo el código real de ChoicePage.cpp (upstream): el
+# botón de Alongside se oculta salvo que ChoicePage::canBeResized()
+# devuelva true para al menos una partición, y esa función depende de
+# candidate->available() -- el espacio libre DENTRO del filesystem NTFS
+# existente, calculado en runtime por KPMcore llamando a herramientas
+# externas (ntfsresize, del paquete ntfs-3g), no del espacio libre del
+# disco en sí. libkpmcore13 solo declara esto como dependencia en
+# runtime, no como Depends/Recommends de dpkg -- nunca se había instalado
+# en el chroot. Sin él, KPMcore no puede leer cuánto lugar libre tiene la
+# partición de Windows y canBeResized() devuelve false siempre, ocultando
+# Alongside sin importar cuánto espacio real haya. Hace falta en el medio
+# LIVE (donde corre el propio Calamares/KPMcore), no en el sistema
+# instalado -- por eso no se había necesitado hasta ahora.
+ntfs-3g

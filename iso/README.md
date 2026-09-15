@@ -348,6 +348,39 @@ vía Ollama) → `kal-in` (agente de referencia, ver más abajo) → kiosco.
     scaffolding de `gdb` usado para esto
     (paquete + acción de PolicyKit propia + wrapper) fue temporal,
     revertido (`c2374e5`, `d89ca6e`) — no queda en el build normal.
+  - **"Alongside" — la sospecha de arriba (que os-prober no detectaba
+    una NTFS vacía) era incorrecta; bug real distinto, encontrado y
+    corregido (2026-09-15):** armando un disco de prueba con contenido
+    Windows-*ish* de verdad (`bootmgr` + `Boot/BCD` con la cadena
+    "Windows 10" codificada en UTF-16LE, igual que un BCD real —
+    escrito directo con `ntfscp`/montaje FUSE de `ntfs-3g` en el host,
+    sin root, ver nota al final de "Probar en QEMU"), os-prober
+    detectó bien "Windows 10" (se vio en la barra de particiones), pero
+    "Install alongside" seguía sin aparecer — solo "Replace a
+    partition"/"Erase disk"/"Manual partitioning". Leyendo
+    `ChoicePage.cpp` de Calamares upstream: el botón de Alongside se
+    oculta salvo que `PartUtils::canBeResized()` devuelva true para
+    alguna partición, y esa función depende de `candidate->available()`
+    — el espacio libre *dentro* del filesystem NTFS existente, que
+    KPMcore calcula en runtime llamando a `ntfsresize` (paquete
+    `ntfs-3g`). `libkpmcore13` solo lo necesita en runtime, no lo
+    declara como `Depends`/`Recommends` de dpkg — nunca se había
+    instalado en el medio live (a diferencia del sistema instalado, que
+    no lo necesita para nada). Sin él, KPMcore no puede leer cuánto
+    lugar libre tiene la partición de Windows y `canBeResized()`
+    devuelve false siempre, ocultando Alongside sin importar cuánto
+    espacio real hubiera. Agregado `ntfs-3g` al package-list. **Confirmado
+    después del fix:** "Install alongside" aparece, seleccionarlo abre
+    el slider de resize real ("Select a partition to shrink, then drag
+    the bottom bar to resize"), clickear la partición Windows 10 la
+    selecciona y calcula automáticamente `/dev/vda1 will be shrunk to
+    2968MiB and a new 32870MiB partition will be created for Debian`,
+    con "Next" habilitado. No se completó el install real por este
+    camino (alcanzaba con confirmar que el slider calcula y habilita
+    bien) — el camino "Replace a partition" sigue bloqueado por el bug
+    de Qt de arriba (#2535), pero "Alongside" es una vía automática
+    alternativa que ya funciona de punta a punta hasta el paso de
+    partición.
   - Todavía sin conectar: Secure Boot/TPM (bloqueado por UEFI, issue
     #6, fuera de alcance por ahora). Ver `docs/ROADMAP.md`, Etapa 2.
   - **Instalación completa de punta a punta, confirmada en QEMU
