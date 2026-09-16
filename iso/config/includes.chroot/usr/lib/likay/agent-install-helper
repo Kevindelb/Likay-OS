@@ -89,8 +89,20 @@ def _run(cmd: list[str]) -> None:
     una lista de argumentos (nunca shell=True, nunca una string
     interpolada), así que no hay forma de que un valor derivado del
     manifiesto (un YAML no confiable) inyecte comandos adicionales.
+
+    capture_output=True es obligatorio acá, no cosmético -- bug real
+    encontrado en QEMU (2026-09-16): sin esto, la salida de cada
+    subproceso (pip install, systemctl, etc.) hereda el propio stdout
+    del helper, que es el MISMO pipe que main() usa para el único
+    print(json.dumps(result)) final que la TUI espera parsear. En
+    cuanto pip tuvo red de verdad y empezó a imprimir progreso
+    ("Collecting fastapi...", etc.), ese texto quedó pegado ANTES del
+    JSON real, y run_helper() en la TUI fallaba con
+    "Expecting value: line 1 column 1 (char 0)" al intentar
+    json.loads() sobre el string completo. No se había notado antes
+    porque ninguna operación previa producía salida verbosa en stdout.
     """
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 def _agent_paths(short_id: str) -> dict[str, Path]:
@@ -400,7 +412,12 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as exc:
-        print(json.dumps({"error": f"comando falló: {exc}"}), file=sys.stderr)
+        # exc.stderr/exc.stdout (poblados por capture_output=True en
+        # _run) tienen el detalle real -- str(exc) solo dice el
+        # returncode, nada útil para diagnosticar (p.ej. el mensaje de
+        # pip sobre por qué falló la resolución de dependencias).
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        print(json.dumps({"error": f"comando falló: {detail}"}), file=sys.stderr)
         return 1
 
     print(json.dumps(result))
