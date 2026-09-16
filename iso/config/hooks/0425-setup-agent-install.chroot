@@ -36,3 +36,10 @@ chmod 0755 /etc/grub.d/41_likay_agent_install
 # 0420: solo escribe los symlinks de [Install], no hace falta un
 # systemd corriendo de verdad dentro del chroot.
 systemctl enable likay-agent-install.service
+
+# A diferencia de la línea de arriba, ESTE mount corre en TODO
+# arranque (normal de kiosco incluido), no solo en modo agent-install
+# -- ver el comentario largo en el propio .mount. Vive en este hook
+# solo porque es la infraestructura de agentes más cercana
+# temáticamente, no porque esté scoped a likay.mode=agent-install.
+systemctl enable 'mnt-likay\x2dagent.mount'

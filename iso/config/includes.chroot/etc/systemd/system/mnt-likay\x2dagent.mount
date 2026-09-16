@@ -1,0 +1,34 @@
+# Monta la partición likay-agent (creada por Calamares, ver
+# 0440-configure-calamares-partitioning.chroot -- a propósito SIN
+# mountPoint en fstab, reservada para el mecanismo de "montar
+# cualquier agente") en /mnt/likay-agent en TODO arranque, no solo en
+# likay.mode=agent-install.
+#
+# Bug real encontrado en QEMU (2026-09-16): op_mount_bundle() en
+# agent-install-helper monta esta partición, pero solo durante la
+# sesión de instalación -- nunca queda como mount persistente. Un
+# agente ya instalado (con su venv/src/data bajo
+# /mnt/likay-agent/<short_id>/) fallaba en CADA arranque normal de
+# kiosco con "Failed to set up mount namespacing:
+# /mnt/likay-agent/<short_id>/data: No such file or directory" /
+# "226/NAMESPACE", porque ReadWritePaths= (ver _systemd_unit_text en
+# el helper) apunta a una ruta que, sin este mount, simplemente no
+# existe en un arranque nuevo.
+#
+# DefaultDependencies=no + Before=local-fs.target: mismo patrón que
+# cualquier .mount que necesite estar listo temprano, antes de que
+# local-fs.target (del que dependen los .service de agentes vía la
+# cadena normal de arranque) se considere alcanzado.
+[Unit]
+Description=Likay-OS -- partición likay-agent (agentes de terceros instalados)
+DefaultDependencies=no
+Before=local-fs.target
+
+[Mount]
+What=/dev/disk/by-label/likay-agent
+Where=/mnt/likay-agent
+Type=ext4
+Options=defaults,nofail
+
+[Install]
+WantedBy=local-fs.target
