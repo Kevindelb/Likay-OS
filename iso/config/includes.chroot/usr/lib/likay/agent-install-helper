@@ -5,7 +5,7 @@ Helper privilegiado de instalación de agentes -- invocado SOLO vía
 com.likay.agent-install.policy + 61-likay-agent-install.rules, scoped
 al usuario likay-agent-install).
 
-Expone exactamente 6 operaciones, nombradas, sin argumentos libres --
+Expone un set fijo de operaciones nombradas (ver OPERATIONS abajo), sin argumentos libres --
 NUNCA "ejecutar comando arbitrario" (ver docs/AGENT_INTERFACE.md
 invariante 7). Todas las rutas que toca son fijas/derivadas del propio
 manifiesto ya validado -- nada se interpola en un shell, nada llega
@@ -70,6 +70,7 @@ OPERATIONS = (
     "install_bundle",
     "generate_unit",
     "activate_agent",
+    "reboot",
 )
 
 # Unidades de infraestructura que matchean el glob likay-agent-*.service
@@ -407,6 +408,24 @@ def op_activate_agent() -> dict:
     return {"unit": unit_name, "port": port}
 
 
+def op_reboot() -> dict:
+    # Operación fija de propósito único (invariante 7 de
+    # docs/AGENT_INTERFACE.md) -- no "ejecutar comando arbitrario",
+    # literalmente "systemctl reboot" hardcodeado. Bug real encontrado
+    # en hardware físico (2026-09-17): la pantalla final de la TUI
+    # ("Instalación completa... Reiniciá para volver al modo kiosco
+    # normal") solo esperaba una tecla y el proceso terminaba ahí --
+    # nunca reiniciaba de verdad. Con Restart=no en
+    # likay-agent-install.service y tty1 liberado de getty mientras
+    # corría (Conflicts=getty@tty1.service, nunca restaurado al parar),
+    # la pantalla quedaba muerta, sin nada escuchando teclado -- el
+    # usuario tenía que apagar a la fuerza. La TUI corre sin privilegios
+    # (invariante 1/2), así que el reboot pasa por acá, como el resto de
+    # las operaciones privilegiadas.
+    _run(["systemctl", "reboot"])
+    return {}
+
+
 _DISPATCH = {
     "mount_bundle": op_mount_bundle,
     "validate_manifest": op_validate_manifest,
@@ -414,6 +433,7 @@ _DISPATCH = {
     "install_bundle": op_install_bundle,
     "generate_unit": op_generate_unit,
     "activate_agent": op_activate_agent,
+    "reboot": op_reboot,
 }
 
 

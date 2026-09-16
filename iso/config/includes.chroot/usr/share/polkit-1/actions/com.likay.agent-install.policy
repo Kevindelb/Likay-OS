@@ -4,8 +4,9 @@
      (ver docs/AGENT_INTERFACE.md: "una única acción Polkit propia,
      separada de Calamares"). org.freedesktop.policykit.exec.path fija
      esta autorización a un único binario de superficie mínima
-     (agent-install-helper), con exactamente 6 operaciones nombradas,
-     nunca ejecución arbitraria como root. allow_active se queda en
+     (agent-install-helper), con un set fijo de operaciones nombradas
+     (ver OPERATIONS en el propio script), nunca ejecución arbitraria
+     como root. allow_active se queda en
      auth_admin por defecto; la regla real que lo abre sin contraseña
      para el usuario estático likay-agent-install vive en
      etc/polkit-1/rules.d, no acá.

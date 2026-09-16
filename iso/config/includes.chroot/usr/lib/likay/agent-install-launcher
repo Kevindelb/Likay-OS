@@ -53,9 +53,9 @@ class InstallAborted(Exception):
 def run_helper(operation: str) -> dict:
     """
     Único punto de llamada al helper privilegiado -- SIEMPRE vía
-    pkexec, SIEMPRE con el nombre exacto de una de las 6 operaciones
-    (ver agent-install-helper, OPERATIONS) como único argumento. Nunca
-    se arma un comando distinto ni se interpola nada acá.
+    pkexec, SIEMPRE con el nombre exacto de una de las operaciones
+    fijas (ver agent-install-helper, OPERATIONS) como único argumento.
+    Nunca se arma un comando distinto ni se interpola nada acá.
     """
     proc = subprocess.run(
         ["pkexec", HELPER, operation],
@@ -159,6 +159,36 @@ def check_existing_agent(stdscr) -> None:
         )
 
 
+def _reboot_or_show_fallback(stdscr) -> None:
+    """
+    Bug real encontrado en hardware físico (2026-09-17): antes de esto,
+    las pantallas finales ("Instalación completa"/"Instalación
+    cancelada") solo esperaban una tecla y el proceso terminaba ahí --
+    el mensaje decía "reiniciá" pero nada lo hacía de verdad. Con
+    Restart=no en likay-agent-install.service y tty1 sin getty mientras
+    corría (Conflicts=getty@tty1.service, nunca restaurado al parar),
+    la pantalla quedaba muerta -- el usuario tenía que apagar a la
+    fuerza. `reboot` es la séptima operación fija del helper (ver
+    agent-install-helper, OPERATIONS) -- si por lo que sea falla, se
+    muestra un mensaje final en vez de dejar la pantalla en silencio
+    sin ninguna explicación.
+    """
+    try:
+        run_helper("reboot")
+    except InstallAborted as exc:
+        # footer NO vacío a propósito -- a diferencia de las pantallas
+        # de progreso "Paso N/6" (que nunca deben esperar tecla, ver el
+        # docstring de draw_message), acá SÍ hace falta bloquear: es la
+        # última pantalla posible, el usuario tiene que leer que el
+        # reinicio automático falló antes de que curses.wrapper()
+        # limpie la terminal al salir.
+        draw_message(
+            stdscr, "No se pudo reiniciar automáticamente",
+            [str(exc), "Apagá el equipo manualmente para continuar."],
+            footer="Presioná cualquier tecla para salir...",
+        )
+
+
 def main(stdscr) -> int:
     curses.curs_set(0)
 
@@ -230,13 +260,15 @@ def main(stdscr) -> int:
         draw_message(
             stdscr, "Instalación completa",
             [f"'{agent_id}' está instalado y activo como {linux_user}.",
-             "Reiniciá para volver al modo kiosco normal."],
-            footer="Presioná cualquier tecla para salir...",
+             "Reiniciando para volver al modo kiosco normal..."],
+            footer="Presioná cualquier tecla para reiniciar...",
         )
+        _reboot_or_show_fallback(stdscr)
         return 0
 
     except InstallAborted as exc:
-        draw_message(stdscr, "Instalación cancelada", [str(exc)], footer="Presioná cualquier tecla para salir...")
+        draw_message(stdscr, "Instalación cancelada", [str(exc)], footer="Presioná cualquier tecla para reiniciar...")
+        _reboot_or_show_fallback(stdscr)
         return 1
 
 
