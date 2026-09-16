@@ -15,6 +15,16 @@
 # el helper) apunta a una ruta que, sin este mount, simplemente no
 # existe en un arranque nuevo.
 #
+# ConditionKernelCommandLine=!boot=casper -- segundo bug real,
+# encontrado apenas arriba en QEMU (2026-09-16): "nofail" evita que la
+# FALLA del mount bloquee el arranque, pero NO evita la espera de
+# hasta 90s por el .device que nunca va a aparecer en el medio live
+# (que jamás tiene esta partición) -- cada boot del live quedaba
+# colgado ~90s en "Job dev-disk-by\x2dlabel-likay\x2dagent...".
+# boot=casper está SIEMPRE presente en el cmdline del live (confirmado
+# en serial), NUNCA en un disco ya instalado -- distingue los dos
+# casos de forma confiable sin tocar nada del lado de casper.
+#
 # DefaultDependencies=no + Before=local-fs.target: mismo patrón que
 # cualquier .mount que necesite estar listo temprano, antes de que
 # local-fs.target (del que dependen los .service de agentes vía la
@@ -23,6 +33,7 @@
 Description=Likay-OS -- partición likay-agent (agentes de terceros instalados)
 DefaultDependencies=no
 Before=local-fs.target
+ConditionKernelCommandLine=!boot=casper
 
 [Mount]
 What=/dev/disk/by-label/likay-agent
