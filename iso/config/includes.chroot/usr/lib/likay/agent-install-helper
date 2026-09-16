@@ -331,6 +331,12 @@ def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
 
     return f"""[Unit]
 Description=Likay-OS agent -- {manifest.agent_id} (generado por agent-install-helper)
+# RequiresMountsFor -- no ConditionKernelCommandLine ni [Install] en
+# mnt-likay\\x2dagent.mount (ver el comentario largo ahí, bug real
+# 2026-09-16): systemd resuelve solo qué .mount cubre esta ruta y lo
+# monta bajo demanda, SOLO porque este agente concreto lo necesita --
+# nada lo pide en un arranque de kiosco sin ningún agente instalado.
+RequiresMountsFor={paths['base']}
 After=network.target likay-agent-broker.service
 
 [Service]

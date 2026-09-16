@@ -1,45 +1,40 @@
 # Monta la partición likay-agent (creada por Calamares, ver
 # 0440-configure-calamares-partitioning.chroot -- a propósito SIN
 # mountPoint en fstab, reservada para el mecanismo de "montar
-# cualquier agente") en /mnt/likay-agent en TODO arranque, no solo en
-# likay.mode=agent-install.
+# cualquier agente") en /mnt/likay-agent.
 #
 # Bug real encontrado en QEMU (2026-09-16): op_mount_bundle() en
 # agent-install-helper monta esta partición, pero solo durante la
-# sesión de instalación -- nunca queda como mount persistente. Un
+# sesión de instalación -- nunca quedaba como mount persistente. Un
 # agente ya instalado (con su venv/src/data bajo
 # /mnt/likay-agent/<short_id>/) fallaba en CADA arranque normal de
 # kiosco con "Failed to set up mount namespacing:
 # /mnt/likay-agent/<short_id>/data: No such file or directory" /
-# "226/NAMESPACE", porque ReadWritePaths= (ver _systemd_unit_text en
-# el helper) apunta a una ruta que, sin este mount, simplemente no
-# existe en un arranque nuevo.
+# "226/NAMESPACE".
 #
-# ConditionKernelCommandLine=!boot=casper -- segundo bug real,
-# encontrado apenas arriba en QEMU (2026-09-16): "nofail" evita que la
-# FALLA del mount bloquee el arranque, pero NO evita la espera de
-# hasta 90s por el .device que nunca va a aparecer en el medio live
-# (que jamás tiene esta partición) -- cada boot del live quedaba
-# colgado ~90s en "Job dev-disk-by\x2dlabel-likay\x2dagent...".
-# boot=casper está SIEMPRE presente en el cmdline del live (confirmado
-# en serial), NUNCA en un disco ya instalado -- distingue los dos
-# casos de forma confiable sin tocar nada del lado de casper.
+# SEGUNDO bug real, encontrado arreglando el primero: habilitarlo
+# incondicionalmente vía [Install] WantedBy=local-fs.target colgaba
+# CADA arranque del medio live ~90s esperando el .device (que ahí
+# nunca existe) -- ConditionKernelCommandLine=!boot=casper NO alcanzó
+# para evitarlo: local-fs.target ya tira de la dependencia del
+# .device ANTES de que la Condition de esta unidad se evalúe, así que
+# la espera pasa igual aunque la unidad termine "skipped".
 #
-# DefaultDependencies=no + Before=local-fs.target: mismo patrón que
-# cualquier .mount que necesite estar listo temprano, antes de que
-# local-fs.target (del que dependen los .service de agentes vía la
-# cadena normal de arranque) se considere alcanzado.
+# Fix real: esta unidad NO se habilita en ningún arranque. En cambio,
+# cada unidad de agente generada (ver _systemd_unit_text en
+# agent-install-helper) declara RequiresMountsFor=/mnt/likay-agent/<id>
+# -- systemd resuelve sola qué .mount cubre esa ruta (esta) y la monta
+# bajo demanda, SOLO cuando un agente de verdad la necesita. En el
+# medio live no existe ningún likay-agent-*.service, así que esta
+# unidad nunca se pide y nunca espera nada. mount_bundle() en el
+# helper la sigue montando a mano durante la instalación (con su
+# propio os.path.ismount() de por medio, sin conflicto).
 [Unit]
 Description=Likay-OS -- partición likay-agent (agentes de terceros instalados)
 DefaultDependencies=no
-Before=local-fs.target
-ConditionKernelCommandLine=!boot=casper
 
 [Mount]
 What=/dev/disk/by-label/likay-agent
 Where=/mnt/likay-agent
 Type=ext4
 Options=defaults,nofail
-
-[Install]
-WantedBy=local-fs.target

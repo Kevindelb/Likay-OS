@@ -37,9 +37,9 @@ chmod 0755 /etc/grub.d/41_likay_agent_install
 # systemd corriendo de verdad dentro del chroot.
 systemctl enable likay-agent-install.service
 
-# A diferencia de la línea de arriba, ESTE mount corre en TODO
-# arranque (normal de kiosco incluido), no solo en modo agent-install
-# -- ver el comentario largo en el propio .mount. Vive en este hook
-# solo porque es la infraestructura de agentes más cercana
-# temáticamente, no porque esté scoped a likay.mode=agent-install.
-systemctl enable 'mnt-likay\x2dagent.mount'
+# mnt-likay\x2dagent.mount NO se habilita acá a propósito -- ver el
+# comentario largo en el propio .mount (bug real: habilitarlo vía
+# local-fs.target colgaba ~90s cada arranque del medio live, que
+# nunca tiene esa partición). Cada agente generado la pide sola vía
+# RequiresMountsFor= en su unidad (ver _systemd_unit_text en
+# agent-install-helper) -- no hace falta ningún enable acá.
