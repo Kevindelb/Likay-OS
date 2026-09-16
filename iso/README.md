@@ -71,6 +71,40 @@ de paquetes, `binary/`) corran siempre, así que no hace falta correr
 tocar `config/`, `sudo ./auto/clean --binary` (mantiene `chroot/`) o
 `--all` (limpia todo, build desde cero) son la salida segura.
 
+### Variante bare (sin kal-in horneado)
+
+```bash
+cd iso
+sudo LIKAY_BARE_KAL_IN=1 ./auto/build
+sudo ./scripts/rebuild-iso-with-fixes.sh
+```
+
+Por default el build hornea `kal-in` (Fase 1 del issue #2, prototipo de
+validación del pipeline de boot — ver docs/ROADMAP.md). La variante
+`bare` la saca por completo: nada de `vendor/kal-in` en el chroot,
+`kal-in-backend.service` ni instalado ni habilitado. Sirve para probar
+el mecanismo genérico de "instalar un agente externo" (TUI +
+`agent-install-helper` + Broker + sandbox, ver `docs/AGENT_INTERFACE.md`)
+sobre un sistema realmente limpio — si aparece un agente andando después
+de instalar esta ISO, se sabe con certeza que vino del flujo de
+instalación externa, no de algo horneado de fábrica.
+
+`LIKAY_BARE_KAL_IN` se lee una sola vez, en `auto/build` — es el único
+punto de decisión de la variante; todo lo que depende de kal-in
+(el propio `vendor/kal-in`, el hook `0320-install-kal-in.chroot`, el
+`systemctl enable` de `0400-setup-kiosk.chroot`, la Condition de
+`kal-in-backend.service`) lo lee de ahí en cascada, nunca decide por su
+cuenta. `sudo ./scripts/rebuild-iso-with-fixes.sh` no necesita que le
+repitas la variable — la variante queda persistida en
+`.likay-build-variant` (generado por `auto/build`, no versionado) para
+que el segundo comando no pueda desincronizarse del primero.
+
+El resultado final es un archivo con nombre distinto por variante
+(`likay-os-amd64.iso` / `likay-os-amd64-bare.iso`, junto al
+`binary.hybrid.iso` de siempre que siguen usando el resto de los
+scripts/docs de prueba en QEMU) — para no arriesgarse a flashear la ISO
+equivocada a un USB real.
+
 ## Probar en QEMU
 
 ```bash

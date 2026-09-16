@@ -58,3 +58,8 @@ model-cache.disabled-for-test/
 # mano), nunca autoría a mano.
 __pycache__/
 *.pyc
+
+# Marca la variante del build en curso (bare/default) -- generada por
+# auto/build, leída por scripts/rebuild-iso-with-fixes.sh. Puro estado
+# de una corrida local, no autoría a mano.
+/.likay-build-variant

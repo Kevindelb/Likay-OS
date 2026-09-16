@@ -45,6 +45,28 @@ if [ ! -d binary/casper ]; then
     exit 1
 fi
 
+# Lee la variante decidida por auto/build (único punto de decisión, ver
+# el comentario ahí) en vez de aceptar LIKAY_BARE_KAL_IN de nuevo acá —
+# este script corre como un comando SEPARADO (ver el comentario grande
+# al final de auto/build), y si dependiera de que el usuario repita la
+# misma variable a mano en las dos invocaciones, un olvido dejaría el
+# .iso final con el nombre de la variante equivocada sin ningún aviso.
+if [ -f .likay-build-variant ]; then
+    LIKAY_BUILD_VARIANT="$(cat .likay-build-variant)"
+else
+    LIKAY_BUILD_VARIANT="default"
+fi
+echo "=================================================================="
+echo "Likay-OS build"
+if [ "${LIKAY_BUILD_VARIANT}" = "bare" ]; then
+    echo "Variant: bare (no kal-in)"
+    ISO_ARTIFACT_NAME="likay-os-amd64-bare.iso"
+else
+    echo "Variant: default (kal-in baked)"
+    ISO_ARTIFACT_NAME="likay-os-amd64.iso"
+fi
+echo "=================================================================="
+
 # Bug real, encontrado en hardware real (2026-09-15): el menú de arranque
 # solo mostraba las dos entradas "Live", nunca "Instalar Likay-OS" —
 # nunca se había probado el menú REAL, solo el modo instalador en sí
@@ -120,3 +142,12 @@ mv chroot/binary ./binary
 rm -f chroot/binary.hybrid.iso
 
 echo "==> Listo: binary.hybrid.iso reconstruida"
+
+# Copia con nombre distinguible por variante -- pedido explícito del
+# usuario (2026-09-16): "no dejaría que ambas ISOs terminen con nombres
+# indistinguibles". binary.hybrid.iso sigue siendo el artefacto de
+# trabajo (lo referencian el resto de los scripts/docs de prueba en
+# QEMU) -- esta copia es específicamente la que se flashea a un USB
+# real, para no confundir accidentalmente qué variante se está grabando.
+cp -f binary.hybrid.iso "${ISO_ARTIFACT_NAME}"
+echo "==> Artefacto para flashear: ${ISO_ARTIFACT_NAME}"

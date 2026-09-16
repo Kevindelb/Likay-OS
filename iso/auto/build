@@ -23,6 +23,40 @@ cd "$(dirname "${0}")/.."  # iso/
 source config/likay/model.conf  # define MODEL_TAG (no se usa acá directo,
                                  # pero documenta qué se está horneando)
 
+# Único punto de decisión de la variante del build (pedido explícito
+# del usuario, 2026-09-16): todo lo que depende de si kal-in va horneado
+# o no se decide ACÁ, una sola vez, y se propaga hacia abajo -- nunca un
+# segundo lugar que decida por su cuenta. Se propaga de dos formas:
+#   1. Dentro de ESTE script: el bloque de abajo que copia vendor/kal-in
+#      a includes.chroot/opt/kal-in se salta entero si es bare -- así
+#      que /opt/kal-in simplemente NO EXISTE dentro del chroot. Los
+#      hooks que dependen de kal-in (0320-install-kal-in.chroot,
+#      0400-setup-kiosk.chroot) no vuelven a preguntar por
+#      LIKAY_BARE_KAL_IN -- preguntan si /opt/kal-in existe, que es la
+#      consecuencia mecánica de ESTA decisión, no una segunda decisión
+#      independiente.
+#   2. Entre invocaciones separadas (auto/build acá, y
+#      scripts/rebuild-iso-with-fixes.sh como paso manual aparte, ver el
+#      comentario al final de este archivo): se persiste en
+#      .likay-build-variant para que el nombre del .iso final no dependa
+#      de que el usuario recuerde repetir la misma variable a mano en el
+#      segundo comando.
+LIKAY_BARE_KAL_IN="${LIKAY_BARE_KAL_IN:-0}"
+if [ "${LIKAY_BARE_KAL_IN}" = "1" ]; then
+    LIKAY_BUILD_VARIANT="bare"
+else
+    LIKAY_BUILD_VARIANT="default"
+fi
+echo "=================================================================="
+echo "Likay-OS build"
+if [ "${LIKAY_BUILD_VARIANT}" = "bare" ]; then
+    echo "Variant: bare (no kal-in)"
+else
+    echo "Variant: default (kal-in baked)"
+fi
+echo "=================================================================="
+echo "${LIKAY_BUILD_VARIANT}" > .likay-build-variant
+
 REPO_ROOT="$(cd .. && pwd)"
 MODEL_CACHE_DIR="model-cache"
 CHROOT_MODELS_DIR="chroot/usr/share/ollama/.ollama/models"
@@ -47,13 +81,32 @@ rsync -a --delete \
 # completos (la separación de código adentro de kal-in en sí es trabajo
 # futuro, según su propio README) — corre standalone, no depende de
 # vendor/kal para nada todavía.
-echo "==> Copiando vendor/kal-in a includes.chroot/opt/kal-in"
-mkdir -p "${INCLUDES_KAL_IN_DIR}"
-rsync -a --delete \
-    --exclude='.git' \
-    --exclude='tests' \
-    --exclude='vscode-extension' \
-    "${REPO_ROOT}/vendor/kal-in/" "${INCLUDES_KAL_IN_DIR}/"
+if [ "${LIKAY_BUILD_VARIANT}" = "bare" ]; then
+    echo "==> Variante bare: saltando vendor/kal-in (no va horneado)"
+    rm -rf "${INCLUDES_KAL_IN_DIR}"
+    # chroot/ se conserva entre builds a propósito (ver el comentario
+    # grande más abajo sobre .build/) -- pero eso significa que si ESTE
+    # mismo chroot/ ya tuvo un build "default" antes, /opt/kal-in y el
+    # symlink de [Install] de kal-in-backend.service siguen ahí:
+    # lb_chroot_includes copia lo que encuentra en includes.chroot/, no
+    # borra lo que un build anterior dejó y ya no está. Sin este
+    # borrado explícito, hook 0320/0400 verían /opt/kal-in igual y esta
+    # build "bare" no sería bare de verdad.
+    if [ -d chroot/opt/kal-in ] || [ -d chroot/opt/kal-in-home ] \
+       || [ -e chroot/etc/systemd/system/multi-user.target.wants/kal-in-backend.service ]; then
+        echo "==> Variante bare: limpiando /opt/kal-in de un build anterior en este mismo chroot/"
+        rm -rf chroot/opt/kal-in chroot/opt/kal-in-home
+        rm -f chroot/etc/systemd/system/multi-user.target.wants/kal-in-backend.service
+    fi
+else
+    echo "==> Copiando vendor/kal-in a includes.chroot/opt/kal-in"
+    mkdir -p "${INCLUDES_KAL_IN_DIR}"
+    rsync -a --delete \
+        --exclude='.git' \
+        --exclude='tests' \
+        --exclude='vscode-extension' \
+        "${REPO_ROOT}/vendor/kal-in/" "${INCLUDES_KAL_IN_DIR}/"
+fi
 
 # vendor/calamares-settings-debian: base vendorizada para el instalador
 # de Etapa 2 (config oficial del Debian Live Team para imágenes

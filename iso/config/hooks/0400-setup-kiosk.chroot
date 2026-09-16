@@ -32,5 +32,14 @@ fi
 # correcta contra symlinks viejos).
 systemctl disable kal-backend.service 2>/dev/null || true
 systemctl disable likay-smoke-test.service 2>/dev/null || true
-systemctl enable kal-in-backend.service
+
+# Variante bare (LIKAY_BARE_KAL_IN=1, ver auto/build — único punto de
+# decisión): /opt/kal-in no existe, mismo chequeo que
+# 0320-install-kal-in.chroot — no habilitar un servicio cuyo ExecStart
+# apunta a un venv que nunca se instaló.
+if [ -f /opt/kal-in/requirements-core.txt ]; then
+    systemctl enable kal-in-backend.service
+else
+    echo "==> /opt/kal-in no existe (variante bare) — no se habilita kal-in-backend.service"
+fi
 systemctl enable likay-kiosk.service

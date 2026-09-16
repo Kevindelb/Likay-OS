@@ -15,6 +15,17 @@ Wants=ollama.service
 # distintas no dan AND). Ver docs/ROADMAP.md, Etapa 2 /
 # docs/AGENT_INTERFACE.md.
 ConditionKernelCommandLine=!likay.privileged
+# Variante bare (LIKAY_BARE_KAL_IN=1, ver iso/auto/build): /opt/kal-in
+# no existe, así que ni el venv ni el ExecStart de abajo tienen nada
+# para correr. Sin esto, likay-kiosk.service's Wants=kal-in-backend.service
+# (ver el comentario ahí sobre por qué un Wants= arranca la unidad SIN
+# IMPORTAR su enable/disable) lo dispararía igual en cada boot, crasheando
+# en loop cada RestartSec por un venv que nunca se instaló -- un
+# ConditionPathExists=/ruta falla en "skipped", instantáneo, sin el
+# problema de espera de dispositivo que sí tienen los ConditionKernelCommandLine=
+# combinados con mounts (ver [[systemd-mount-pull-not-condition]]) --
+# acá no hay ningún .device de por medio, es un chequeo de archivo llano.
+ConditionPathExists=/opt/kal-in/.venv/bin/uvicorn
 
 [Service]
 Type=simple
