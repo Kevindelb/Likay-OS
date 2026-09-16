@@ -37,6 +37,7 @@ USB_BUNDLE_LABEL = "LIKAY-BUNDLE"
 USB_BUNDLE_MOUNT = Path("/mnt/likay-bundle-usb")
 MANIFEST_PATH = USB_BUNDLE_MOUNT / "agent.yaml"
 BUNDLE_SRC_DIR = USB_BUNDLE_MOUNT / "src"
+ACTIVE_AGENT_CONF = Path("/etc/likay-os/active-agent.conf")
 
 # Red temporal SOLO para resolver "pip install -r requirements.txt" --
 # encontrado en QEMU (2026-09-16): el sistema instalado no trae ninguna
@@ -384,7 +385,20 @@ def op_activate_agent() -> dict:
     _run(["systemctl", "daemon-reload"])
     _run(["systemctl", "enable", "--now", unit_name])
 
-    return {"unit": unit_name, "port": manifest.lifecycle.get("port")}
+    # /etc/likay-os/ es root:root -- la TUI (corre como
+    # likay-agent-install, sin privilegios) no puede escribir ahí.
+    # Bug real encontrado en QEMU (2026-09-16): la TUI intentaba
+    # escribirlo directo después de activate_agent, con un
+    # PermissionError sin capturar que tumbaba el proceso entero
+    # (Main process exited, status=1) justo después de que el agente
+    # ya había quedado activo -- la pantalla se quedaba congelada en
+    # "Paso 6/6" para siempre, sin ningún mensaje de error visible.
+    port = manifest.lifecycle.get("port")
+    if port:
+        ACTIVE_AGENT_CONF.parent.mkdir(parents=True, exist_ok=True)
+        ACTIVE_AGENT_CONF.write_text(f"AGENT_URL=http://127.0.0.1:{port}\n")
+
+    return {"unit": unit_name, "port": port}
 
 
 _DISPATCH = {

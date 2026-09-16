@@ -34,10 +34,8 @@ import curses
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 HELPER = "/usr/lib/likay/agent-install-helper"
-ACTIVE_AGENT_CONF = Path("/etc/likay-os/active-agent.conf")
 
 # Mismo motivo y misma lista que INFRA_UNITS en agent-install-helper --
 # el glob likay-agent-*.service matchea al propio Broker, que no es un
@@ -221,12 +219,13 @@ def main(stdscr) -> int:
             raise InstallAborted(f"no se pudo registrar la política en el Broker: {exc}") from exc
 
         draw_message(stdscr, "Paso 6/6", ["Activando el servicio del agente..."], footer="")
-        activated = run_helper("activate_agent")
-        port = activated.get("port")
-
-        if port:
-            ACTIVE_AGENT_CONF.parent.mkdir(parents=True, exist_ok=True)
-            ACTIVE_AGENT_CONF.write_text(f"AGENT_URL=http://127.0.0.1:{port}\n")
+        run_helper("activate_agent")
+        # activate_agent (helper, como root) ya escribió
+        # /etc/likay-os/active-agent.conf -- esta TUI corre sin
+        # privilegios y NO puede escribir en /etc directamente (bug
+        # real encontrado en QEMU 2026-09-16: un PermissionError acá
+        # tumbaba el proceso entero con el agente ya activado, dejando
+        # la pantalla congelada en "Paso 6/6" sin ningún mensaje).
 
         draw_message(
             stdscr, "Instalación completa",
