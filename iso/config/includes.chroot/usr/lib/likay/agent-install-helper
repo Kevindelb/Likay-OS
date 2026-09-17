@@ -486,6 +486,7 @@ def op_activate_agent() -> dict:
     # "fuera de alcance de v1") -- para cualquier OTRO
     # likay-agent-*.service que esté activo, lo detiene y deshabilita
     # antes de activar el nuevo.
+    deactivated_linux_users: list[str] = []
     existing = subprocess.run(
         ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "likay-agent-*.service"],
         check=True, capture_output=True, text=True,
@@ -494,6 +495,25 @@ def op_activate_agent() -> dict:
         other_unit = line.split()[0] if line.split() else ""
         if other_unit and other_unit != unit_name and other_unit not in INFRA_UNITS:
             _run(["systemctl", "disable", "--now", other_unit])
+
+            # Hallazgo real (2026-09-17): hasta acá, el agente viejo
+            # quedaba desactivado pero su usuario Linux y su grant en
+            # el Broker (policy.json) nunca se limpiaban -- quedaban
+            # huérfanos para siempre en cada reinstalación con un
+            # agente DISTINTO (v1 soporta uno solo activo a la vez).
+            # remove_grant() ya existía en policy_store.py sin ningún
+            # caller; acá se resuelve el otro lado, userdel, y se junta
+            # la lista de usuarios para que el caller (la TUI, la única
+            # que puede hablarle al Broker directo) limpie su grant vía
+            # el nuevo método unregister_policy.
+            other_short_id = other_unit.removeprefix("likay-agent-").removesuffix(".service")
+            other_linux_user = f"agent-{other_short_id}"
+            try:
+                pwd.getpwnam(other_linux_user)
+            except KeyError:
+                continue  # no debería pasar (el nombre viene de una unidad real), pero no es fatal
+            _run(["userdel", other_linux_user])
+            deactivated_linux_users.append(other_linux_user)
 
     _run(["systemctl", "daemon-reload"])
     _run(["systemctl", "enable", "--now", unit_name])
@@ -520,7 +540,7 @@ def op_activate_agent() -> dict:
     if BUNDLE_STAGING.exists():
         shutil.rmtree(BUNDLE_STAGING)
 
-    return {"unit": unit_name, "port": port}
+    return {"unit": unit_name, "port": port, "deactivated_linux_users": deactivated_linux_users}
 
 
 def op_reboot() -> dict:

@@ -185,6 +185,61 @@ class TestRegisterPolicyAuthorization:
         assert events[0]["method"] == "register_policy"
 
 
+class TestUnregisterPolicyAuthorization:
+    """
+    Hallazgo real (2026-09-17): PolicyStore.remove_grant() existía sin
+    ningún caller -- misma frontera de autorización que register_policy
+    (invariante 5/6), mismo motivo: solo likay-agent-install puede
+    mutar política, nunca decidido por un campo del JSON.
+    """
+
+    def test_authorized_peer_can_unregister_policy(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path)
+        server._policy_store.upsert_grant(AgentGrant(
+            agent_id="com.example.old-agent", linux_user="agent-old-agent",
+            capabilities=["network.egress"], installed_at="2026-09-15T00:00:00Z",
+        ))
+        req = protocol.Request(id=1, method="unregister_policy", params={"linux_user": "agent-old-agent"})
+
+        resp = json.loads(server._handle_unregister_policy(req, peer_user="likay-agent-install"))
+
+        assert resp["result"]["decision"] == "ALLOW"
+        assert resp["result"]["removed"] is True
+        assert server._policy_store.get_grant(linux_user="agent-old-agent") is None
+
+    def test_unregistering_nonexistent_grant_reports_removed_false(self, tmp_path: Path) -> None:
+        """No es un error preguntar por un agente que ya no tiene grant -- es el caso normal."""
+        server = _make_server(tmp_path)
+        req = protocol.Request(id=1, method="unregister_policy", params={"linux_user": "agent-nunca-existio"})
+
+        resp = json.loads(server._handle_unregister_policy(req, peer_user="likay-agent-install"))
+
+        assert resp["result"]["decision"] == "ALLOW"
+        assert resp["result"]["removed"] is False
+
+    def test_arbitrary_agent_cannot_unregister_another_agents_policy(self, tmp_path: Path) -> None:
+        """Mismo escenario central que register_policy: rechazo por identidad de peer, nunca por el JSON."""
+        server = _make_server(tmp_path)
+        server._policy_store.upsert_grant(AgentGrant(
+            agent_id="com.example.victim", linux_user="agent-victim",
+            capabilities=["network.egress"], installed_at="2026-09-15T00:00:00Z",
+        ))
+        req = protocol.Request(id=1, method="unregister_policy", params={"linux_user": "agent-victim"})
+
+        resp = json.loads(server._handle_unregister_policy(req, peer_user="agent-malicious-agent"))
+
+        assert resp["error"]["code"] == protocol.PERMISSION_DENIED
+        assert server._policy_store.get_grant(linux_user="agent-victim") is not None
+
+    def test_missing_linux_user_param_is_invalid_params(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path)
+        req = protocol.Request(id=1, method="unregister_policy", params={})
+
+        resp = json.loads(server._handle_unregister_policy(req, peer_user="likay-agent-install"))
+
+        assert resp["error"]["code"] == protocol.INVALID_PARAMS
+
+
 class TestDispatch:
     def test_unknown_method_is_method_not_found(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path)
@@ -247,6 +302,77 @@ class TestEndToEndOverRealSocket:
             assert resp["result"]["decision"] == "ALLOW"
         finally:
             pass  # daemon thread, no hace falta parar el servidor a mano en el test
+
+
+class TestConnectionHardening:
+    """
+    Hallazgo real (2026-09-17): sin max_requests/idle_timeout por
+    conexión, un cliente podía acaparar un thread para siempre (ocioso,
+    sin mandar nada) o mandar volumen ilimitado de requests en una sola
+    conexión de larga vida. Portado de vendor/kal/kernel/api/socket_server.py
+    (mismos límites, alcance por-conexión en vez de por-vida-del-servidor
+    porque este es un daemon persistente, no un socket efímero).
+    """
+
+    def test_connection_closed_after_max_requests(self, tmp_path: Path) -> None:
+        server = BrokerServer(
+            socket_path=tmp_path / "broker.sock",
+            policy_store=PolicyStore(path=tmp_path / "policy.json"),
+            audit_log=AuditLog(path=tmp_path / "audit.log"),
+            max_requests_per_connection=2,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        _wait_for_socket(server._socket_path)
+
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(server._socket_path))
+        client.settimeout(2.0)
+
+        for i in range(2):
+            client.sendall(
+                (json.dumps({"jsonrpc": "2.0", "id": i, "method": "check_capability",
+                             "params": {"capability": "x"}}) + "\n").encode()
+            )
+            assert client.recv(4096)  # las primeras 2 sí responden
+
+        # La 3ra request sobre la MISMA conexión: el servidor ya cerró
+        # su lado tras alcanzar max_requests_per_connection. Según el
+        # timing exacto, eso se ve como un BrokenPipeError en el propio
+        # sendall (el servidor ya cerró antes de que este dato llegue)
+        # o como un recv() devolviendo EOF (b"") -- ambas son la misma
+        # señal real: "esta conexión ya no está viva".
+        connection_was_closed = False
+        try:
+            client.sendall(
+                (json.dumps({"jsonrpc": "2.0", "id": 99, "method": "check_capability",
+                             "params": {"capability": "x"}}) + "\n").encode()
+            )
+            if client.recv(4096) == b"":
+                connection_was_closed = True
+        except (BrokenPipeError, ConnectionResetError):
+            connection_was_closed = True
+        assert connection_was_closed
+        client.close()
+
+    def test_idle_connection_is_closed_after_timeout(self, tmp_path: Path) -> None:
+        server = BrokerServer(
+            socket_path=tmp_path / "broker.sock",
+            policy_store=PolicyStore(path=tmp_path / "policy.json"),
+            audit_log=AuditLog(path=tmp_path / "audit.log"),
+            idle_timeout=0.2,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        _wait_for_socket(server._socket_path)
+
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(server._socket_path))
+        client.settimeout(2.0)
+        # No manda nada -- el servidor debe cerrar por su cuenta tras
+        # idle_timeout, sin que el cliente haga nada.
+        assert client.recv(4096) == b""
+        client.close()
 
 
 def _current_username() -> str:

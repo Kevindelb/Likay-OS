@@ -49,7 +49,7 @@ HELPER = "/usr/lib/likay/agent-install-helper"
 INFRA_UNITS = frozenset({"likay-agent-broker.service", "likay-agent-install.service"})
 
 sys.path.insert(0, "/opt/likay-broker")
-from likay_broker.client import BrokerClientError, register_policy  # noqa: E402
+from likay_broker.client import BrokerClientError, register_policy, unregister_policy  # noqa: E402
 
 
 class InstallAborted(Exception):
@@ -255,7 +255,22 @@ def main(stdscr) -> int:
             raise InstallAborted(f"no se pudo registrar la política en el Broker: {exc}") from exc
 
         draw_message(stdscr, "Paso 6/6", ["Activando el servicio del agente..."], footer="")
-        run_helper("activate_agent")
+        activated = run_helper("activate_agent")
+
+        # Hallazgo real (2026-09-17): el helper ya hace userdel del
+        # usuario Linux de cualquier agente viejo que haya desactivado
+        # (v1 soporta uno solo activo a la vez), pero solo el Broker en
+        # sí puede tocar su propio policy.json -- remove_grant() existía
+        # sin ningún caller. Best-effort a propósito: el agente NUEVO ya
+        # quedó activo y funcionando en el paso de arriba; que no se
+        # pueda limpiar el grant HUÉRFANO de uno viejo no es motivo para
+        # abortar una instalación que, por lo demás, ya terminó bien.
+        for old_linux_user in activated.get("deactivated_linux_users", []):
+            try:
+                unregister_policy(linux_user=old_linux_user)
+            except BrokerClientError:
+                pass
+
         # activate_agent (helper, como root) ya escribió
         # /etc/likay-os/active-agent.conf -- esta TUI corre sin
         # privilegios y NO puede escribir en /etc directamente (bug

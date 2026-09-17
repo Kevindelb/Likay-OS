@@ -68,11 +68,27 @@ class BrokerServer:
         socket_path: Path = DEFAULT_SOCKET_PATH,
         policy_store: PolicyStore | None = None,
         audit_log: AuditLog | None = None,
+        max_requests_per_connection: int = 100,
+        idle_timeout: float = 30.0,
     ) -> None:
         self._socket_path = socket_path
         self._policy_store = policy_store or PolicyStore()
         self._audit_log = audit_log or AuditLog()
         self._server_sock: socket.socket | None = None
+        # Hardening portado de vendor/kal/kernel/api/socket_server.py
+        # (hallazgo de revisión de seguridad, 2026-09-17): sin esto, una
+        # conexión podía quedar abierta indefinidamente sin mandar nada
+        # (ociosa, un thread acaparado para siempre) o mandar un volumen
+        # ilimitado de requests en una sola conexión de larga vida --
+        # ninguna de las dos cosas fallaba antes, solo no tenían techo.
+        # Alcance DISTINTO al de kal a propósito: kal acota
+        # max_requests sobre la VIDA ENTERA de un socket efímero
+        # (se tira al terminar una ejecución de skill); acá el servidor
+        # es un daemon persistente (likay-agent-broker.service), así que
+        # el límite natural es POR CONEXIÓN -- un cliente que necesite
+        # más simplemente reconecta, no queda bloqueado para siempre.
+        self._max_requests_per_connection = max_requests_per_connection
+        self._idle_timeout = idle_timeout
 
     def serve_forever(self) -> None:
         # En producción, systemd ya crea este directorio (RuntimeDirectory=
@@ -112,9 +128,19 @@ class BrokerServer:
 
             peer_user = _username_for_uid(uid) or f"uid:{uid}"
 
+            # idle_timeout se reinicia en cada llamada bloqueante (recv):
+            # dispara si esta conexión concreta pasa ese tiempo sin mandar
+            # NADA, no acota la vida total de una conexión activa.
+            # socket.timeout es un alias de TimeoutError (subclase de
+            # OSError) en Python moderno, así que lo captura el except de
+            # abajo sin necesitar una rama nueva -- misma "cortar en
+            # silencio" que ya usaban los demás errores transitorios.
+            conn.settimeout(self._idle_timeout)
+
             buf = b""
+            requests_handled = 0
             try:
-                while True:
+                while requests_handled < self._max_requests_per_connection:
                     chunk = conn.recv(4096)
                     if not chunk:
                         return
@@ -127,6 +153,7 @@ class BrokerServer:
                             continue
                         response = self._dispatch_line(line.decode("utf-8", errors="replace"), peer_user)
                         conn.sendall((response + "\n").encode("utf-8"))
+                        requests_handled += 1
             except (ConnectionResetError, BrokenPipeError, OSError):
                 return
 
@@ -140,6 +167,8 @@ class BrokerServer:
             return self._handle_check_capability(req, peer_user)
         if req.method == "register_policy":
             return self._handle_register_policy(req, peer_user)
+        if req.method == "unregister_policy":
+            return self._handle_unregister_policy(req, peer_user)
 
         self._audit_log.record(peer_user=peer_user, method=req.method, decision="DENY",
                                 detail={"reason": "unknown_method"})
@@ -209,3 +238,48 @@ class BrokerServer:
             detail={"agent_id": agent_id, "linux_user": linux_user, "capabilities": capabilities},
         )
         return protocol.success_response(req.id, {"decision": "ALLOW"})
+
+    def _handle_unregister_policy(self, req: protocol.Request, peer_user: str) -> str:
+        """
+        Hallazgo real (2026-09-17): PolicyStore.remove_grant() existía
+        desde el diseño original del Broker pero nunca tenía caller --
+        v1 solo soporta un agente activo a la vez (ver
+        docs/AGENT_INTERFACE.md sección 9), y activate_agent (helper)
+        desactiva el agente viejo al instalar uno nuevo, pero nunca
+        limpiaba su grant en el Broker ni su usuario Linux -- quedaban
+        huérfanos para siempre. Misma frontera de autorización que
+        register_policy, mismo motivo exacto (invariante 5/6): solo
+        _POLICY_WRITER_USER puede mutar política, nunca un agent_id que
+        venga en el JSON.
+
+        Recibe linux_user, no agent_id -- es lo único que el caller
+        (agent-install-helper, ver op_activate_agent) tiene a mano en
+        ese momento (deriva el nombre de usuario del short_id de la
+        unidad systemd que acaba de deshabilitar, nunca vuelve a leer
+        el manifiesto viejo). agent_id para el remove_grant() real se
+        resuelve acá, vía el propio grant ya guardado.
+        """
+        if peer_user != _POLICY_WRITER_USER:
+            self._audit_log.record(
+                peer_user=peer_user, method="unregister_policy", decision="DENY",
+                detail={"reason": "peer_not_authorized"},
+            )
+            return protocol.error_response(
+                req.id, protocol.PERMISSION_DENIED,
+                "unregister_policy solo lo puede llamar la identidad de instalación",
+            )
+
+        linux_user = req.params.get("linux_user")
+        if not isinstance(linux_user, str) or not linux_user:
+            return protocol.error_response(req.id, protocol.INVALID_PARAMS, "falta 'linux_user'")
+
+        grant = self._policy_store.get_grant(linux_user=linux_user)
+        removed = grant is not None
+        if grant is not None:
+            self._policy_store.remove_grant(agent_id=grant.agent_id)
+
+        self._audit_log.record(
+            peer_user=peer_user, method="unregister_policy", decision="ALLOW",
+            detail={"linux_user": linux_user, "removed": removed},
+        )
+        return protocol.success_response(req.id, {"decision": "ALLOW", "removed": removed})

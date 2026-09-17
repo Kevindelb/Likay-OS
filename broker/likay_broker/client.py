@@ -58,6 +58,23 @@ def register_policy(
         raise BrokerClientError(f"register_policy no autorizado: {result}")
 
 
+def unregister_policy(*, linux_user: str, socket_path: Path = DEFAULT_SOCKET_PATH) -> bool:
+    """
+    Hallazgo real (2026-09-17): remove_grant() del PolicyStore existía
+    sin ningún caller -- ver el docstring largo de
+    _handle_unregister_policy en socket_server.py. Llamada por la TUI
+    (agent-install-launcher) con su propia credencial Unix, igual que
+    register_policy -- nunca por el helper, que no necesita tocar el
+    Broker para nada. Devuelve si de verdad había un grant para borrar
+    (False es normal la primera vez que se instala un agente, cuando
+    activate_agent no desactivó ningún agente anterior).
+    """
+    result = _call("unregister_policy", {"linux_user": linux_user}, socket_path=socket_path)
+    if result.get("decision") != "ALLOW":
+        raise BrokerClientError(f"unregister_policy no autorizado: {result}")
+    return bool(result.get("removed"))
+
+
 def check_capability(*, capability: str, socket_path: Path = DEFAULT_SOCKET_PATH) -> bool:
     result = _call("check_capability", {"capability": capability}, socket_path=socket_path)
     return result.get("decision") == "ALLOW"

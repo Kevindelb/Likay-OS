@@ -49,11 +49,12 @@ Sandbox (unidades systemd generadas en el momento de instalar) es el
 4. El ALLOW del Broker no es enforcement de sistema operativo en v1 —
    es una API de cortesía; el sandbox de systemd es el backstop real.
 5. Solo la identidad dedicada `likay-agent-install` puede mutar la
-   política del Broker (`register_policy`) — nunca un agente, nunca
-   root genérico, nunca algo derivado de un campo JSON.
-6. `register_policy` se autoriza por **credencial Unix del peer del
-   socket** (`SO_PEERCRED`), nunca por un `agent_id` que venga en el
-   cuerpo de la solicitud.
+   política del Broker (`register_policy`/`unregister_policy`) — nunca
+   un agente, nunca root genérico, nunca algo derivado de un campo
+   JSON.
+6. `register_policy`/`unregister_policy` se autorizan por **credencial
+   Unix del peer del socket** (`SO_PEERCRED`), nunca por un `agent_id`
+   o `linux_user` que venga en el cuerpo de la solicitud.
 7. El helper de instalación no expone ninguna primitiva de ejecución
    arbitraria como root (nada de `exec(cmd)`/`run_as_root(cmd)`) — su
    API son operaciones nombradas, fijas, de propósito único.
@@ -231,7 +232,7 @@ un usuario Linux dedicado sin privilegios, `likay-broker`, nunca como
 root) — JSONL sobre `AF_UNIX`, mismo formato
 de trama que `vendor/kal/kernel/api/socket_server.py`.
 
-Dos métodos, con fronteras de autorización **distintas**, decididas
+Tres métodos, con fronteras de autorización **distintas**, decididas
 por credencial Unix del socket (`SO_PEERCRED`), nunca por un campo
 dentro del JSON:
 
@@ -240,11 +241,19 @@ dentro del JSON:
   `SO_PEERCRED` → UID → usuario Linux dedicado de ese agente. Un
   agente solo puede consultar sus propias capacidades otorgadas, nunca
   las de otro proceso.
-- **`register_policy(agent_id, capabilities)`** — el Broker acepta
-  esta llamada ÚNICAMENTE si `SO_PEERCRED` del peer resuelve a la UID
-  del usuario estático `likay-agent-install` (hardcodeado en el
-  Broker). Ningún agente instalado puede llamarlo con éxito, sea cual
-  sea su UID.
+- **`register_policy(agent_id, linux_user, capabilities)`** — el
+  Broker acepta esta llamada ÚNICAMENTE si `SO_PEERCRED` del peer
+  resuelve a la UID del usuario estático `likay-agent-install`
+  (hardcodeado en el Broker). Ningún agente instalado puede llamarlo
+  con éxito, sea cual sea su UID.
+- **`unregister_policy(linux_user)`** — misma frontera exacta que
+  `register_policy`. Limpieza de lifecycle (2026-09-17): v1 solo
+  soporta un agente activo a la vez (sección 9) — cuando
+  `activate_agent` (helper) desactiva y da de baja el usuario Linux de
+  un agente anterior, la TUI llama a esto para que su grant en
+  `policy.json` no quede huérfano para siempre. `removed: false` en la
+  respuesta es el caso normal (no había ningún agente anterior que
+  limpiar), no un error.
 
 En v1, la política es "lo que un humano aprobó una vez, en el momento
 de instalar, en el TUI" — sin flujo de escalación en runtime. Nada
@@ -260,10 +269,23 @@ audit:
   event_prefix: agent_kal-in
 ```
 
-Toda decisión del Broker (ALLOW o DENY, para cualquiera de los dos
+Toda decisión del Broker (ALLOW o DENY, para cualquiera de los tres
 métodos) se loguea siempre, sin excepción, a
-`/var/log/likay-agent-broker/audit.log` (JSONL: `timestamp, agent_id,
-method, decision`).
+`/var/log/likay-agent-broker/audit.log` (JSONL: `timestamp, peer_user,
+method, decision, detail`).
+
+**Cadena hash-linked** (portado de `vendor/kal/audit/audit_log.py`,
+2026-09-17): cada línea incluye `prev_hash`/`event_hash` (SHA-256 sobre
+el resto de sus propios campos), así que una edición retroactiva del
+archivo (un agente con acceso de escritura local intentando borrar su
+propio rastro) rompe la cadena de forma detectable —
+`AuditLog.diagnose_chain()` distingue manipulación de contenido real
+(`hash_ok=False`) de una condición de carrera entre escritores
+concurrentes (`hash_ok=True, chain_ok=False`, ya cubierta por el
+`fcntl.flock` que envuelve todo el ciclo leer-último-hash + escribir).
+No es criptográficamente inviolable — para eso haría falta firma
+externa o almacenamiento WORM real — pero hace la manipulación
+evidente en vez de silenciosa.
 
 ## 7. Agente #0 — el instalador, como ejemplo ya resuelto
 

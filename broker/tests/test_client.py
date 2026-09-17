@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from likay_broker.audit import AuditLog
-from likay_broker.client import BrokerClientError, check_capability, register_policy
+from likay_broker.client import BrokerClientError, check_capability, register_policy, unregister_policy
 from likay_broker.policy_store import AgentGrant, PolicyStore
 from likay_broker.socket_server import BrokerServer
 
@@ -74,3 +74,25 @@ def test_register_policy_via_client_as_unauthorized_peer_raises(tmp_path: Path) 
             agent_id="com.example.test", linux_user="agent-test",
             capabilities=["disk.write"], socket_path=server._socket_path,
         )
+
+
+def test_unregister_policy_via_client_as_authorized_peer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import likay_broker.socket_server as ss
+    monkeypatch.setattr(ss, "_POLICY_WRITER_USER", _current_username())
+
+    server = _start_server(tmp_path)
+    server._policy_store.upsert_grant(AgentGrant(
+        agent_id="com.example.old", linux_user="agent-old",
+        capabilities=["network.egress"], installed_at="2026-09-15T00:00:00Z",
+    ))
+
+    removed = unregister_policy(linux_user="agent-old", socket_path=server._socket_path)
+
+    assert removed is True
+    assert server._policy_store.get_grant(linux_user="agent-old") is None
+
+
+def test_unregister_policy_via_client_as_unauthorized_peer_raises(tmp_path: Path) -> None:
+    server = _start_server(tmp_path)
+    with pytest.raises(BrokerClientError):
+        unregister_policy(linux_user="agent-old", socket_path=server._socket_path)
