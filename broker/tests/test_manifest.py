@@ -121,6 +121,60 @@ def test_rejects_requirements_files_plural_list() -> None:
         parse_manifest_text(bad)
 
 
+def test_rejects_env_value_with_newline_unit_injection() -> None:
+    """
+    Hallazgo real (2026-09-17): env no tenía ninguna restricción de
+    contenido, y _systemd_unit_text interpola sus valores crudos como
+    Environment={k}={v} en la unidad generada. Un valor con '\\n'
+    inyecta una línea propia DESPUÉS de User={linux_user} -- la última
+    asignación gana, escalando el servicio del agente a root.
+    """
+    bad = VALID_KAL_IN_MANIFEST.replace(
+        "    AGENT_ENV: production\n",
+        '    AGENT_ENV: production\n    EVIL: "x\\nUser=root\\n"\n',
+    )
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
+def test_rejects_env_key_lowercase() -> None:
+    """Las claves de env tampoco tenían restricción -- ver el hallazgo de arriba."""
+    bad = VALID_KAL_IN_MANIFEST.replace("    AGENT_ENV: production\n", "    agent_env: production\n")
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
+def test_rejects_command_with_path_traversal() -> None:
+    """
+    Hallazgo real (2026-09-17): command sin restricción permitía escapar
+    del venv (exec_start = f"{venv}/bin/{command} ..."). Un valor como
+    '../../../../usr/bin/sh' ejecuta un binario del host como el
+    usuario del agente en vez de algo dentro de <venv>/bin/.
+    """
+    bad = VALID_KAL_IN_MANIFEST.replace(
+        'command: "uvicorn"', 'command: "../../../../usr/bin/sh"'
+    )
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
+def test_rejects_entry_point_with_whitespace() -> None:
+    """
+    Hallazgo real (2026-09-17): entry_point sin restricción permitía
+    inyectar flags extra después del --host 127.0.0.1 forzado en
+    ExecStart (el último flag gana en uvicorn) -- p.ej.
+    "app --host 0.0.0.0" expone el agente a la LAN pese a
+    sandbox.network: host-egress, contradiciendo la garantía de
+    bind_host de docs/AGENT_INTERFACE.md.
+    """
+    bad = VALID_KAL_IN_MANIFEST.replace(
+        'entry_point: "agent_core.orchestrator:app"',
+        'entry_point: "agent_core.orchestrator:app --host 0.0.0.0"',
+    )
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
 class TestValidateRequirementsPath:
     def test_accepts_file_inside_bundle(self, tmp_path: Path) -> None:
         src = tmp_path / "src"

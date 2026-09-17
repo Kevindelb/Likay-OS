@@ -13,7 +13,11 @@ por un argumento que el TUI (no confiable, aunque corra como usuario
 propio) pudiera manipular más allá del NOMBRE de la operación.
 
 Cada operación revalida el manifiesto desde cero (nunca confía en lo
-que ya mostró/parseó el TUI sin privilegios) -- invariante 2/3.
+que ya mostró/parseó el TUI sin privilegios) -- invariante 2/3. Esa
+revalidación lee de un staging root-owned (BUNDLE_STAGING), no del USB
+directo -- mount_bundle es la ÚNICA operación que toca el medio físico,
+copia una sola vez y lo desmonta (ver el comentario junto a
+BUNDLE_STAGING, hallazgo TOCTOU 2026-09-17).
 
 register_policy NO es una operación de acá -- se resuelve aparte, vía
 el propio socket del Broker con autorización por SO_PEERCRED (ver
@@ -35,8 +39,23 @@ from likay_broker.manifest import AgentManifest, ManifestError, parse_manifest_f
 LIKAY_AGENT_MOUNT = Path("/mnt/likay-agent")
 USB_BUNDLE_LABEL = "LIKAY-BUNDLE"
 USB_BUNDLE_MOUNT = Path("/mnt/likay-bundle-usb")
-MANIFEST_PATH = USB_BUNDLE_MOUNT / "agent.yaml"
-BUNDLE_SRC_DIR = USB_BUNDLE_MOUNT / "src"
+# Hallazgo real (2026-09-17, TOCTOU): antes, MANIFEST_PATH/BUNDLE_SRC_DIR
+# apuntaban directo al USB montado, y cada operación (create_agent,
+# install_bundle, generate_unit...) releía el manifiesto del USB por su
+# cuenta, por separado -- nada ataba lo que la TUI mostró/el usuario
+# aprobó en el paso 2-4 a un contenido concreto. Si alguien cambiaba el
+# USB (mismo label LIKAY-BUNDLE, otro agent.yaml) entre la aprobación y
+# install_bundle/generate_unit, la unidad systemd se generaba del
+# manifiesto NUEVO mientras el Broker registraba las capacidades
+# aprobadas del VIEJO -- estado inconsistente, enforcement silenciosamente
+# distinto de lo aprobado. Fix: mount_bundle copia el manifiesto+src/ a
+# un staging root-owned UNA sola vez; toda operación posterior lee de
+# ahí, nunca vuelve a tocar el USB -- el TOCTOU queda cerrado por
+# construcción (no hay ventana en la que releer pueda dar algo distinto),
+# no solo detectado con un hash.
+BUNDLE_STAGING = Path("/var/lib/likay-agent-install/bundle-staging")
+MANIFEST_PATH = BUNDLE_STAGING / "agent.yaml"
+BUNDLE_SRC_DIR = BUNDLE_STAGING / "src"
 ACTIVE_AGENT_CONF = Path("/etc/likay-os/active-agent.conf")
 
 # Red temporal SOLO para resolver "pip install -r requirements.txt" --
@@ -85,7 +104,7 @@ class HelperError(RuntimeError):
     pass
 
 
-def _run(cmd: list[str]) -> None:
+def _run(cmd: list[str], *, run_as_user: str | None = None) -> None:
     """
     Único punto de ejecución de subprocesos de este archivo -- SIEMPRE
     una lista de argumentos (nunca shell=True, nunca una string
@@ -103,8 +122,40 @@ def _run(cmd: list[str]) -> None:
     "Expecting value: line 1 column 1 (char 0)" al intentar
     json.loads() sobre el string completo. No se había notado antes
     porque ninguna operación previa producía salida verbosa en stdout.
+
+    run_as_user -- hallazgo real (2026-09-17): sin esto, TODO comando
+    corre con la identidad del propio helper (root, vía pkexec). Para
+    "python3 -m venv"/pip install de un bundle de terceros eso significa
+    que el build backend de cualquier paquete (setup.py, etc.) ejecuta
+    código arbitrario COMO ROOT, con red abierta, antes de que exista
+    ningún sandbox -- el momento de mayor privilegio de todo el sistema
+    para código no confiable. subprocess.run(user=...) (nativo desde
+    Python 3.9, sin preexec_fn a mano) baja el proceso hijo al UID/GID
+    del usuario dado ANTES de ejecutar -- el blast radius de un paquete
+    malicioso pasa de "root total" a "el usuario sin privilegios que se
+    acaba de crear para este agente", ya sandboxeado por systemd después.
+    HOME se fuerza al home real de ese usuario: sin esto, pip hereda el
+    HOME de root (/root), que ese usuario no puede leer/escribir.
+
+    group SE PASA A MANO, no queda implícito -- bug real encontrado en
+    QEMU (2026-09-17) probando esto mismo: subprocess.run(user=str) NO
+    infiere el grupo primario del usuario solo -- sin group= explícito,
+    el proceso hijo hereda el GID del padre (root, grupo 0). Confirmado
+    con debugfs sobre el venv resultante: User quedaba en el UID
+    correcto del agente, pero Group en 0 (root) -- gid equivocado en
+    todo lo que ese proceso creaba, aunque el UID ya estuviera bien.
     """
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    env = None
+    group = None
+    if run_as_user is not None:
+        pw = pwd.getpwnam(run_as_user)
+        env = dict(os.environ)
+        env["HOME"] = pw.pw_dir
+        group = pw.pw_gid
+    subprocess.run(
+        cmd, check=True, capture_output=True, text=True,
+        user=run_as_user, group=group, env=env,
+    )
 
 
 def _agent_paths(short_id: str) -> dict[str, Path]:
@@ -145,13 +196,40 @@ def op_mount_bundle() -> dict:
             "ver docs/AGENT_INTERFACE.md, transporte del bundle en v1."
         )
     if not os.path.ismount(USB_BUNDLE_MOUNT):
-        # Solo lectura: el transporte es explícitamente no confiable
-        # (invariante de docs/AGENT_INTERFACE.md) -- no hay ninguna
-        # razón para que este proceso pueda escribir de vuelta al USB.
-        _run(["mount", "-o", "ro", str(usb_dev), str(USB_BUNDLE_MOUNT)])
+        # ro: el transporte es explícitamente no confiable (invariante
+        # de docs/AGENT_INTERFACE.md) -- no hay ninguna razón para que
+        # este proceso pueda escribir de vuelta al USB. nosuid,nodev,noexec:
+        # "solo lectura" protege contra escritura, no contra un
+        # filesystem hostil (FAT/ext4 malformado a propósito) ni contra
+        # el contenido que sí trae -- nada necesita ejecutarse ni crear
+        # nodos de dispositivo directo desde este mount (install_bundle
+        # solo copia bytes vía shutil.copytree, nunca ejecuta nada de
+        # acá), así que negarlo a nivel de mount no rompe nada real.
+        _run(["mount", "-o", "ro,nosuid,nodev,noexec", str(usb_dev), str(USB_BUNDLE_MOUNT)])
 
-    if not MANIFEST_PATH.is_file():
-        raise HelperError(f"{MANIFEST_PATH} no existe en el medio montado")
+    usb_manifest_path = USB_BUNDLE_MOUNT / "agent.yaml"
+    usb_src_dir = USB_BUNDLE_MOUNT / "src"
+    if not usb_manifest_path.is_file():
+        raise HelperError(f"{usb_manifest_path} no existe en el medio montado")
+
+    # Copia a staging root-owned de una sola vez -- ver el comentario
+    # largo junto a BUNDLE_STAGING (TOCTOU). Todo lo que sigue
+    # (validate_manifest, create_agent, install_bundle, generate_unit)
+    # lee de acá, nunca vuelve a tocar el USB.
+    if BUNDLE_STAGING.exists():
+        shutil.rmtree(BUNDLE_STAGING)
+    BUNDLE_STAGING.mkdir(parents=True, mode=0o700)
+    shutil.copy2(usb_manifest_path, MANIFEST_PATH)
+    if usb_src_dir.is_dir():
+        shutil.copytree(usb_src_dir, BUNDLE_SRC_DIR, symlinks=False)
+    else:
+        BUNDLE_SRC_DIR.mkdir()
+
+    # El USB ya cumplió su única función (transporte, invariante de
+    # docs/AGENT_INTERFACE.md) -- desmontarlo acá, no más tarde, es lo
+    # que realmente cierra la ventana: nada de lo que sigue depende de
+    # que el medio siga conectado ni sea el mismo.
+    _run(["umount", str(USB_BUNDLE_MOUNT)])
 
     return {"manifest_path": str(MANIFEST_PATH), "src_dir": str(BUNDLE_SRC_DIR)}
 
@@ -242,23 +320,40 @@ def op_install_bundle() -> dict:
     if paths["src"].exists():
         shutil.rmtree(paths["src"])
     shutil.copytree(BUNDLE_SRC_DIR, paths["src"], symlinks=False)
+    # chown ACÁ, antes de crear el venv/correr pip como este usuario --
+    # shutil.copytree corrió como root (el propio proceso), así que
+    # src/ y su contenido quedan root:root pese a que paths["base"] ya
+    # es de linux_user (la ownership de un directorio padre no se
+    # hereda a los hijos que ya existían al copiarlos).
+    _run(["chown", "-R", f"{linux_user}:{linux_user}", str(paths["src"])])
 
-    _run(["python3", "-m", "venv", str(paths["venv"])])
+    # Hallazgo real (2026-09-17): python3 -m venv y pip install corrían
+    # como root (el propio proceso del helper) -- ver el docstring de
+    # _run(run_as_user=...). Corren como linux_user desde acá en
+    # adelante: el build backend de cualquier paquete de terceros
+    # (setup.py, etc.) ejecuta como ese usuario sin privilegios, nunca
+    # como root.
+    _run(["python3", "-m", "venv", str(paths["venv"])], run_as_user=linux_user)
 
     # Ventana de red mínima: solo alrededor de los dos pip install que
     # de verdad la necesitan -- ni la copia del bundle ni la creación
     # del venv la requieren. Se apaga en el finally pase lo que pase.
     _enable_installer_network()
     try:
-        _run([str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir", "--upgrade", "pip"])
-        _run([
-            str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir",
-            "-r", str(paths["src"] / requirements_file),
-        ])
+        _run(
+            [str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir", "--upgrade", "pip"],
+            run_as_user=linux_user,
+        )
+        _run(
+            [
+                str(paths["venv"] / "bin" / "pip"), "install", "--no-cache-dir",
+                "-r", str(paths["src"] / requirements_file),
+            ],
+            run_as_user=linux_user,
+        )
     finally:
         _disable_installer_network()
 
-    _run(["chown", "-R", f"{linux_user}:{linux_user}", str(paths["base"])])
     return {"installed": True}
 
 

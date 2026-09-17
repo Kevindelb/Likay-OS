@@ -52,8 +52,18 @@
       "additionalProperties": false,
       "properties": {
         "runtime": {"enum": ["python-venv"]},
-        "entry_point": {"type": "string", "minLength": 1},
-        "command": {"type": "string", "minLength": 1},
+        "entry_point": {
+          "type": "string",
+          "minLength": 1,
+          "not": {"pattern": "\\s"},
+          "description": "Un solo argumento posicional (p.ej. 'agent_core.orchestrator:app'). Sin espacios -- de lo contrario un valor como 'app --host 0.0.0.0' inyectaría flags extra después del --host 127.0.0.1 forzado en ExecStart, rompiendo la garantía de bind_host de docs/AGENT_INTERFACE.md."
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "description": "Nombre de un binario dentro de <venv>/bin/, nunca una ruta. Sin '/' -- de lo contrario un valor como '../../../../usr/bin/sh' escaparía del venv."
+        },
         "requirements_file": {
           "type": "string",
           "minLength": 1,
@@ -64,7 +74,12 @@
         "health_check_path": {"type": "string", "minLength": 1},
         "env": {
           "type": "object",
-          "additionalProperties": {"type": "string"}
+          "propertyNames": {"pattern": "^[A-Z_][A-Z0-9_]*$"},
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[^\r\n]*$",
+            "description": "Sin CR/LF -- de lo contrario un valor como 'x\\nUser=root\\n' se interpola crudo en Environment={k}={v} dentro de la unidad systemd generada (_systemd_unit_text) e inyecta una directiva propia (p.ej. User=root) DESPUÉS del User={linux_user} original -- la última asignación gana, escalando el servicio del agente a root."
+          }
         }
       }
     },
