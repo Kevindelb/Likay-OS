@@ -154,6 +154,32 @@ del autor del manifiesto. El `ExecStart=` generado siempre fuerza
 `--host 127.0.0.1`, sin excepción, sin que el manifiesto tenga ninguna
 autoridad sobre ese valor.
 
+**`command`/`entry_point`/`env` están restringidos en el schema, no
+solo por convención** (hallazgo de una revisión de seguridad,
+2026-09-17 — ver `broker/schema/agent-manifest.schema.json`):
+`command` no admite `/` (no puede escapar de `<venv>/bin/`);
+`entry_point` no admite espacios (no puede inyectar flags extra
+después del `--host 127.0.0.1` forzado); las claves de `env` deben
+matchear `^[A-Z_][A-Z0-9_]*$` y sus valores no pueden contener CR/LF.
+Esta última restricción existe porque `_systemd_unit_text` interpola
+`Environment={k}={v}` crudo en la unidad generada — sin ella, un valor
+con un `\n` embebido podía inyectar una directiva propia (p.ej.
+`User=root`) que ganaba sobre la asignación real, escalando el
+servicio del agente a root pese a `sandbox:` declarar lo contrario.
+`parse_manifest_file` revalida el schema en cada lectura del
+manifiesto (no solo una vez), así que estas restricciones se aplican
+en todos los puntos de entrada del helper, no solo en `validate_manifest`.
+
+**`pip install`/la creación del venv corren como el usuario Unix del
+agente, no como root** — aunque el helper entero corre como root (vía
+`pkexec`). `create_agent` crea ese usuario antes de que `install_bundle`
+lo necesite; ambos subprocesos bajan explícitamente a su UID/GID (sin
+grupos suplementarios) antes de ejecutar. El código de terceros de
+cualquier paquete (`setup.py`, build backends) sigue siendo no
+confiable (invariante 13) — esto acota el blast radius de ese código a
+un usuario recién creado y sandboxeado después, no a compromiso total
+del sistema.
+
 ## 4. Sandbox
 
 ```yaml
@@ -186,6 +212,15 @@ los dos en v1.
 | `devices: none` | `PrivateDevices=yes` |
 | `devices: explicit` | `PrivateDevices=no`, `DevicePolicy=closed`, `DeviceAllow=<lista>` |
 | siempre, todo agente | `NoNewPrivileges=yes`, `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`, `ProtectControlGroups=yes`, `RestrictSUIDSGID=yes`, `LockPersonality=yes`, `SystemCallFilter=@system-service`, `MemoryMax=`/`CPUQuota=`/`TasksMax=` del manifiesto |
+
+**`device_allow` está restringido igual que `env`** (mismo hallazgo
+2026-09-17): `_systemd_unit_text` interpola `DeviceAllow={entry}` crudo
+también, así que un valor con `\n` embebido era el mismo vector de
+inyección que `env`, solo que más silencioso — la TUI nunca muestra el
+`sandbox:` del manifiesto al usuario, solo `id`/puerto/cantidad de
+capacidades. El schema prohíbe CR/LF pero permite el espacio interno
+que la sintaxis real de `DeviceAllow=` necesita (`<device> <permisos>`,
+p.ej. `/dev/sda5 rwm`).
 
 ## 5. IPC (Broker)
 
@@ -325,3 +360,20 @@ audit:
   transporte). El formato del bundle se versiona (`schema_version`)
   para poder sumar transportes autenticados más adelante sin romper
   v1.
+
+**Hallazgo de seguridad, corregido 2026-09-17 (TOCTOU del manifiesto):**
+originalmente cada operación del helper (`create_agent`,
+`install_bundle`, `generate_unit`...) releía `agent.yaml` del USB por
+separado, sin atar nada a lo que el usuario ya había aprobado en la
+TUI — un USB cambiado a mitad de la instalación (misma etiqueta
+`LIKAY-BUNDLE`, otro manifiesto) podía terminar generando una unidad
+systemd distinta de las capacidades que el Broker registró. Fix:
+`mount_bundle` es ahora la ÚNICA operación que toca el medio físico —
+copia `agent.yaml`+`src/` a un staging root-owned
+(`/var/lib/likay-agent-install/bundle-staging/`, `0700`) una sola vez
+y desmonta el USB ahí mismo. Toda operación posterior lee de ese
+staging, nunca vuelve a tocar el USB — el USB puede desconectarse
+inmediatamente después de `mount_bundle` sin afectar el resto del
+flujo. `activate_agent` borra el staging al terminar (higiene, no
+seguridad — quedaba root:root 0700, no explotable, pero no había
+razón para dejarlo para siempre en el disco instalado).

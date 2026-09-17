@@ -158,6 +158,37 @@ def test_rejects_command_with_path_traversal() -> None:
         parse_manifest_text(bad)
 
 
+def test_accepts_device_allow_with_legitimate_space() -> None:
+    """
+    La sintaxis real de systemd's DeviceAllow= es '<device> <permisos>'
+    (p.ej. '/dev/sda5 rwm') -- el espacio en el medio es legítimo, el
+    fix de abajo NO debe romper esto (solo prohíbe CR/LF, no todo
+    whitespace).
+    """
+    ok = VALID_INSTALLER_MANIFEST.replace(
+        "devices: explicit\n", 'devices: explicit\n  device_allow: ["/dev/sda5 rwm"]\n'
+    )
+    manifest = parse_manifest_text(ok)
+    assert manifest.raw["sandbox"]["device_allow"] == ["/dev/sda5 rwm"]
+
+
+def test_rejects_device_allow_with_newline_unit_injection() -> None:
+    """
+    Hallazgo real (2026-09-17): mismo vector que env (ver ese test) por
+    otro campo -- sandbox.device_allow no tenía ninguna restricción, y
+    _systemd_unit_text interpola DeviceAllow={entry} crudo, DESPUÉS de
+    User={linux_user} en la plantilla. Más silencioso todavía que el de
+    env: la TUI nunca muestra el sandbox del manifiesto, solo
+    id/puerto/cantidad de capacidades.
+    """
+    bad = VALID_INSTALLER_MANIFEST.replace(
+        "devices: explicit\n",
+        'devices: explicit\n  device_allow: ["char-x\\nUser=root"]\n',
+    )
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
 def test_rejects_entry_point_with_whitespace() -> None:
     """
     Hallazgo real (2026-09-17): entry_point sin restricción permitía

@@ -144,17 +144,28 @@ def _run(cmd: list[str], *, run_as_user: str | None = None) -> None:
     con debugfs sobre el venv resultante: User quedaba en el UID
     correcto del agente, pero Group en 0 (root) -- gid equivocado en
     todo lo que ese proceso creaba, aunque el UID ya estuviera bien.
+
+    extra_groups=[] -- defensa en profundidad (hallazgo 2026-09-17):
+    sin esto, run_as_user baja el UID/GID primario pero no hay garantía
+    de que se descarten los grupos suplementarios del proceso padre
+    (root, vía pkexec). Pasarlo explícito fuerza setgroups(0, NULL) en
+    el hijo -- el usuario del agente recién creado (useradd -r) no
+    pertenece a ningún grupo extra de todos modos, así que esto no
+    cambia el comportamiento real, solo lo deja garantizado en vez de
+    implícito.
     """
     env = None
     group = None
+    extra_groups = None
     if run_as_user is not None:
         pw = pwd.getpwnam(run_as_user)
         env = dict(os.environ)
         env["HOME"] = pw.pw_dir
         group = pw.pw_gid
+        extra_groups = []
     subprocess.run(
         cmd, check=True, capture_output=True, text=True,
-        user=run_as_user, group=group, env=env,
+        user=run_as_user, group=group, extra_groups=extra_groups, env=env,
     )
 
 
@@ -499,6 +510,15 @@ def op_activate_agent() -> dict:
     if port:
         ACTIVE_AGENT_CONF.parent.mkdir(parents=True, exist_ok=True)
         ACTIVE_AGENT_CONF.write_text(f"AGENT_URL=http://127.0.0.1:{port}\n")
+
+    # Higiene, no seguridad -- hallazgo 2026-09-17: BUNDLE_STAGING
+    # (root:root 0700, no explotable) quedaba para siempre en el disco
+    # instalado con una copia completa del código de un agente de
+    # terceros. El agente ya activo tiene su propia copia en paths["src"]
+    # (con su venv al lado); esta era solo la copia de trabajo del
+    # helper para cerrar el TOCTOU durante la instalación misma.
+    if BUNDLE_STAGING.exists():
+        shutil.rmtree(BUNDLE_STAGING)
 
     return {"unit": unit_name, "port": port}
 

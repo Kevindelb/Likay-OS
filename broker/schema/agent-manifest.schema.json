@@ -99,7 +99,11 @@
         },
         "device_allow": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string",
+            "pattern": "^[^\r\n]+$",
+            "description": "Sin CR/LF -- mismo vector que env (ver ahí): _systemd_unit_text interpola DeviceAllow={entry} crudo, DESPUÉS de User={linux_user} en la plantilla. Un valor con '\\nUser=root' inyectaría una línea propia -- última asignación gana, escalando el servicio del agente a root. No se restringe el espacio: la sintaxis real de DeviceAllow= es '<device> <permisos>' (p.ej. '/dev/sda5 rwm'), con un espacio legítimo en el medio."
+          },
           "description": "Solo tiene efecto si devices == explicit."
         },
         "memory_max": {"type": "string", "pattern": "^[0-9]+[KMGT]?$"},

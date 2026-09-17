@@ -11,17 +11,23 @@ específicamente a este usuario.
 Secuencia (ver docs/AGENT_INTERFACE.md sección 3 / el plan de
 implementación):
   1. Confirmación
-  2. helper mount_bundle
+  2. helper mount_bundle -- copia el manifiesto+src/ a un staging
+     root-owned y desmonta el USB ahí mismo (TOCTOU cerrado, ver el
+     comentario largo junto a BUNDLE_STAGING en agent-install-helper) --
+     el USB ya puede desconectarse después de este paso.
   3. helper validate_manifest -- se muestra el resultado
   4. Aprobación explícita de cada capability
   5. Si hay otro agente activo, ofrecer desactivarlo (ver activate_agent,
      que igual lo hace de forma atómica -- esto es solo para avisar)
-  6-8. helper create_agent / install_bundle / generate_unit
+  6-8. helper create_agent / install_bundle (venv + pip corren como el
+     UID/GID del agente recién creado, nunca como root) / generate_unit
   9. ESTA TUI (no el helper) llama register_policy directo al Broker,
      vía su propia credencial Unix -- nunca necesita pkexec para esto.
-  10. helper activate_agent
-  11. Escribir /etc/likay-os/active-agent.conf
-  12. Desmontar, ofrecer reiniciar
+  10. helper activate_agent -- ya escribe /etc/likay-os/active-agent.conf
+     y limpia el staging del paso 2 (esta TUI, sin privilegios, no
+     puede tocar ninguna de las dos cosas directo).
+  11. helper reboot -- la pantalla final espera una tecla y reinicia de
+     verdad (ver _reboot_or_show_fallback).
 
 curses corre bien sobre consola serie (console=ttyS0,115200n8, ya en
 la línea de arranque de likay.mode=agent-install) con TERM=linux --
