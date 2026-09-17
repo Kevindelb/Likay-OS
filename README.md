@@ -20,10 +20,17 @@ Visión a largo plazo (no el plan inmediato): eventualmente, un kernel propio e 
 
 ## Estado actual
 
-Etapa 1 (ISO live-boot, sin persistencia) arranca de punta a punta en
-QEMU: BIOS → kal-backend → kiosco de chat, probado sin modelo horneado
-todavía (ver [`iso/README.md`](iso/README.md#estado-actual-sin-modelo-horneado)).
-Sin probar en hardware real todavía.
+Etapa 1 (ISO live-boot, sin persistencia) arranca de punta a punta, en
+QEMU y en hardware real: kernel → `qwen2.5:3b` (modelo propio,
+horneado en la ISO) → `kal-in` (agente de referencia) → kiosco. Detalle
+completo en [`iso/README.md`](iso/README.md#estado-actual).
+
+Etapa 2 (montar cualquier agente sobre un Likay-OS ya instalado, vía
+el Agent Broker) también está validada de punta a punta en hardware
+real: instalación de un agente externo sin hornear de fábrica, y
+confirmación de que el sandbox de systemd contiene a un agente
+malicioso incluso cuando su código intenta escapar. Ver
+[`docs/AGENT_INTERFACE.md`](docs/AGENT_INTERFACE.md).
 
 ## Relación con kal
 
