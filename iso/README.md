@@ -17,7 +17,8 @@ bugs reales de esa versión — ver la sección "Cosas raras" más abajo.
 Probado en Ubuntu 26.04. Necesitás:
 
 ```bash
-sudo apt install live-build qemu-system-x86 python3-pip git rsync
+sudo apt install live-build qemu-system-x86 python3-pip git rsync \
+    mtools xorriso grub-efi-amd64-bin ovmf
 ```
 
 `sudo` hace falta para `lb build` (arma un chroot de verdad). El resto
@@ -25,6 +26,13 @@ de las herramientas del build (`genisoimage`, `syslinux`, `isolinux`,
 etc.) se instalan *adentro* del chroot vía
 `config/package-lists/likay.list.chroot` — no hace falta instalarlas
 en el host.
+
+`mtools`/`xorriso`/`grub-efi-amd64-bin` sí corren en el HOST (no
+adentro del chroot) — los usa `scripts/rebuild-iso-with-fixes.sh` para
+injertarle a la ISO ya armada un segundo arranque UEFI (ver "Arranque
+UEFI" más abajo). `ovmf` solo hace falta para *probar* ese arranque en
+QEMU (firmware UEFI, `OVMF_CODE_4M.fd`/`OVMF_VARS_4M.fd`), no para
+buildear.
 
 ## Estructura
 
@@ -104,6 +112,59 @@ El resultado final es un archivo con nombre distinto por variante
 `binary.hybrid.iso` de siempre que siguen usando el resto de los
 scripts/docs de prueba en QEMU) — para no arriesgarse a flashear la ISO
 equivocada a un USB real.
+
+### Arranque UEFI
+
+Issue [#6](https://github.com/Kevindelb/Likay-OS/issues/6). Esta versión
+de live-build (ver el comentario grande en `auto/config`) solo sabe
+generar un catálogo de arranque BIOS/legacy — no hay ninguna
+combinación de `--bootloader` que produzca una ISO híbrida BIOS+UEFI
+nativamente (confirmado leyendo el script real,
+`/usr/lib/live/build/lb_binary_iso`).
+
+`scripts/rebuild-iso-with-fixes.sh` le injerta un segundo arranque
+UEFI a la `binary.hybrid.iso` ya armada: arma un `BOOTX64.EFI`
+standalone (`grub-mkstandalone`) con un `grub.cfg` propio que refleja
+el mismo menú que el BIOS (Live / Instalar Likay-OS, mismos
+kernel/initrd/parámetros — una sola fuente de verdad, `live.cfg` ya
+renderizado por live-build), lo mete en una imagen FAT chica (`mtools`,
+sin loop-mount/root), y usa `xorriso -dev ... -append_partition ...
+efi_path=...` para agregar esa partición + un segundo registro El
+Torito (plataforma UEFI) — cubre tanto arranque óptico/QEMU (`-cdrom`)
+como USB grabado con `dd` (partición MBR tipo `0xef`, lo que la
+mayoría del firmware UEFI real espera).
+
+**Alcance: UEFI sin Secure Boot.** El `BOOTX64.EFI` generado no está
+firmado — un firmware con Secure Boot activo (default en la mayoría de
+laptops UEFI reales) lo va a rechazar. Hay que desactivarlo en la
+configuración del firmware antes de arrancar esta ISO ahí. Habilitar
+Secure Boot (vía `shim` firmado) queda fuera de alcance, coherente con
+que Secure Boot/TPM ya está fuera del roadmap actual.
+
+**Gotcha real encontrado armando esto**: `xorriso -indev X -outdev Y`
+(con `Y` un archivo nuevo, distinto de `X`) trunca cualquier archivo
+que dependa del puente UDF para representar su tamaño real — nuestro
+caso, `filesystem.squashfs`, que supera 4GiB-1 (ver `-allow-limited-size`/
+`-udf` más arriba). Confirmado con un archivo sintético de 4.4GB con
+marcadores en offsets conocidos: con `-outdev` a un archivo nuevo, el
+resultado quedaba truncado a ~100MB (la interpretación ISO9660/RockRidge
+del tamaño, que se sabe incorrecta — por eso existe `-allow-limited-size`
+— en vez del valor real del árbol UDF). La fix: `-dev` (mismo archivo
+de entrada y salida) en vez de `-indev`/`-outdev` separados — xorriso
+lo trata como una sesión nueva agregada al final del archivo existente,
+sin necesidad de releer ni recopiar la sesión anterior. Confirmado bit
+a bit con el archivo sintético, y de punta a punta en QEMU (BIOS y
+UEFI/OVMF) contra la ISO real.
+
+Para probarlo en QEMU con firmware UEFI (paquete `ovmf`):
+
+```bash
+cp /usr/share/OVMF/OVMF_VARS_4M.fd /tmp/ovmf-vars.fd
+qemu-system-x86_64 -enable-kvm -cpu host -m 2048 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=/tmp/ovmf-vars.fd \
+  -cdrom likay-os-amd64-bare.iso -boot d
+```
 
 ## Probar en QEMU
 
