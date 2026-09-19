@@ -115,7 +115,10 @@ el tema con criterio.
 - Si quieres escribir o hablar del proyecto, la documentación técnica
   de este repo es la fuente primaria — pensada para ser citable, con
   cada afirmación respaldada por lo que realmente se probó (y dónde:
-  QEMU o hardware real, cada vez que la diferencia importa).
+  QEMU o hardware real, cada vez que la diferencia importa). Ese mismo
+  nivel de minuciosidad es el método diario de trabajo: cada cambio se
+  revisa y se verifica en coordinación permanente con Claude
+  (Anthropic), no solo se documenta después.
 
 ### Relación con kal
 
@@ -241,6 +244,9 @@ real understanding.
   technical documentation is the primary source — written to be
   citable, with every claim backed by what was actually tested (and
   where: QEMU or real hardware, whenever that difference matters).
+  That same level of care is the day-to-day working method: every
+  change gets reviewed and verified in ongoing coordination with
+  Claude (Anthropic), not just documented after the fact.
 
 ### Relationship to kal
 
