@@ -37,7 +37,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-DATA_DIR = Path(os.environ.get("AGENT_DATA_DIR", "./data"))
+DATA_DIR = Path(os.environ.get("AGENT_STATE_DIR", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = DATA_DIR / "escape_attempts.log"
 

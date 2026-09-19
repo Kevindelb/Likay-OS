@@ -215,12 +215,12 @@ def main(stdscr) -> int:
         agent_id = manifest["agent_id"]
         short_id = manifest["short_id"]
         capabilities = manifest["capabilities"]
-        lifecycle = manifest.get("lifecycle") or {}
+        runtime = manifest.get("runtime") or {}
 
         if not confirm(
             stdscr, f"Manifiesto validado: {agent_id}",
             [f"id:        {agent_id}",
-             f"puerto:    {lifecycle.get('port', '(no es un servicio)')}",
+             f"puerto:    {runtime.get('port', '(no es un servicio)')}",
              f"capacidades pedidas: {len(capabilities)}",
              "", "¿Continuar con la instalación?"],
         ):

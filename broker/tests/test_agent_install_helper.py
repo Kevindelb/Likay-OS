@@ -1,9 +1,9 @@
 """
 Tests de la lógica pura de generación de unidades systemd en
 iso/config/includes.chroot/usr/lib/likay/agent-install-helper --
-específicamente _systemd_unit_text(), la traducción sandbox:/lifecycle:
+específicamente _systemd_unit_text(), la traducción sandbox:/runtime:
 del manifiesto a directivas systemd reales (ver la tabla de mapeo en
-docs/AGENT_INTERFACE.md sección 4). Es la parte con más superficie
+docs/AGENT_INTERFACE.md sección Sandbox). Es la parte con más superficie
 para un bug real (una directiva mal puesta = un agente con más o menos
 sandbox del que el manifiesto declaró), así que se testea aislada del
 resto del helper (que además necesita mounts/root reales, fuera de
@@ -48,28 +48,37 @@ def helper():
     return _load_helper_module()
 
 
-def _manifest(sandbox: dict, lifecycle: dict | None = None) -> AgentManifest:
+_DEFAULT_RUNTIME = {
+    "type": "python",
+    "port": 8000,
+    "python": {"command": "uvicorn", "entry_point": "app:app", "requirements_file": "requirements.txt"},
+}
+
+
+def _manifest(sandbox: dict, runtime: dict | None = None) -> AgentManifest:
     return AgentManifest(raw={
-        "schema_version": 1,
+        "schema_version": 2,
         "agent": {"id": "com.example.test-agent"},
         "capabilities": [],
-        "lifecycle": lifecycle or {
-            "runtime": "python-venv", "command": "uvicorn",
-            "entry_point": "app:app", "port": 8000,
-        },
+        "runtime": runtime or _DEFAULT_RUNTIME,
         "sandbox": sandbox,
     })
 
 
 class TestSandboxToSystemdMapping:
-    def test_filesystem_restricted_gets_read_write_data_dir(self, helper) -> None:
+    def test_filesystem_restricted_gets_read_write_storage_dirs(self, helper) -> None:
+        """
+        Storage taxonomy (schema v2): filesystem: restricted expone las
+        cuatro carpetas de _agent_paths (config/state/workspace/secrets),
+        no un único "data" genérico como en v1.
+        """
         manifest = _manifest({"filesystem": "restricted", "network": "none", "devices": "none"})
         unit = helper._systemd_unit_text(manifest, "agent-test-agent")
 
         assert "ProtectSystem=strict" in unit
         assert "ProtectHome=yes" in unit
-        assert "ReadWritePaths=" in unit
-        assert "/mnt/likay-agent/test-agent/data" in unit
+        for name in ("config", "state", "workspace", "secrets"):
+            assert f"ReadWritePaths=/mnt/likay-agent/test-agent/{name}" in unit
 
     def test_filesystem_none_has_no_read_write_paths(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
@@ -137,7 +146,10 @@ class TestExecStartAlwaysLoopback:
     def test_execstart_forces_loopback_regardless_of_manifest(self, helper) -> None:
         manifest = _manifest(
             {"filesystem": "none", "network": "host-egress", "devices": "none"},
-            lifecycle={"runtime": "python-venv", "command": "uvicorn", "entry_point": "app:app", "port": 9999},
+            runtime={
+                "type": "python", "port": 9999,
+                "python": {"command": "uvicorn", "entry_point": "app:app", "requirements_file": "requirements.txt"},
+            },
         )
         unit = helper._systemd_unit_text(manifest, "agent-test-agent")
 
@@ -151,15 +163,15 @@ class TestExecStartAlwaysLoopback:
         No hay forma de probar 'un manifiesto con bind_host: 0.0.0.0 es
         ignorado' directo, porque ese campo ni siquiera pasa el schema
         (additionalProperties: false, ver test_manifest.py) -- este test
-        confirma la otra mitad: que AgentManifest.lifecycle nunca expone
+        confirma la otra mitad: que AgentManifest.runtime nunca expone
         un campo bind_host aunque alguien lo agregara a mano al dict raw
         (bypaseando el schema), el generador de unidad ni lo mira.
         """
         manifest = _manifest(
             {"filesystem": "none", "network": "host-egress", "devices": "none"},
-            lifecycle={
-                "runtime": "python-venv", "command": "uvicorn", "entry_point": "app:app",
-                "port": 8000, "bind_host": "0.0.0.0",  # bypass directo del dict, sin pasar por el schema
+            runtime={
+                "type": "python", "port": 8000, "bind_host": "0.0.0.0",  # bypass directo del dict, sin pasar por el schema
+                "python": {"command": "uvicorn", "entry_point": "app:app", "requirements_file": "requirements.txt"},
             },
         )
         unit = helper._systemd_unit_text(manifest, "agent-test-agent")
@@ -170,20 +182,51 @@ class TestExecStartAlwaysLoopback:
 
 
 class TestEnvironment:
-    def test_agent_data_dir_env_always_set(self, helper) -> None:
+    def test_storage_env_vars_always_set(self, helper) -> None:
+        """
+        AGENT_CONFIG_DIR/AGENT_STATE_DIR/AGENT_WORKSPACE_DIR/AGENT_SECRETS_DIR
+        reemplazan el AGENT_DATA_DIR único de schema v1 -- ver storage
+        taxonomy en docs/AGENT_INTERFACE.md.
+        """
         manifest = _manifest({"filesystem": "restricted", "network": "none", "devices": "none"})
         unit = helper._systemd_unit_text(manifest, "agent-test-agent")
 
-        assert "Environment=AGENT_DATA_DIR=/mnt/likay-agent/test-agent/data" in unit
+        assert "Environment=AGENT_CONFIG_DIR=/mnt/likay-agent/test-agent/config" in unit
+        assert "Environment=AGENT_STATE_DIR=/mnt/likay-agent/test-agent/state" in unit
+        assert "Environment=AGENT_WORKSPACE_DIR=/mnt/likay-agent/test-agent/workspace" in unit
+        assert "Environment=AGENT_SECRETS_DIR=/mnt/likay-agent/test-agent/secrets" in unit
 
     def test_manifest_env_vars_are_included(self, helper) -> None:
         manifest = _manifest(
             {"filesystem": "none", "network": "none", "devices": "none"},
-            lifecycle={
-                "runtime": "python-venv", "command": "uvicorn", "entry_point": "app:app",
-                "port": 8000, "env": {"AGENT_ENV": "production"},
+            runtime={
+                "type": "python", "port": 8000, "env": {"AGENT_ENV": "production"},
+                "python": {"command": "uvicorn", "entry_point": "app:app", "requirements_file": "requirements.txt"},
             },
         )
         unit = helper._systemd_unit_text(manifest, "agent-test-agent")
 
         assert "Environment=AGENT_ENV=production" in unit
+
+
+class TestRequireImplementedRuntime:
+    """
+    Fase A define el contrato para runtime.type == "oci", pero el
+    Sandbox Adapter real (Podman/Quadlet) es Fase C -- ver
+    docs/AGENT_INTERFACE.md. _require_implemented_runtime es la guarda
+    que hace fallar explícito create_agent/install_bundle/generate_unit
+    ante un manifiesto oci válido, en vez de un traceback confuso
+    intentando leer runtime.python inexistente.
+    """
+
+    def test_python_runtime_is_implemented(self, helper) -> None:
+        manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
+        assert helper._require_implemented_runtime(manifest) == "python"
+
+    def test_oci_runtime_raises_not_implemented(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime={"type": "oci", "oci": {"image": {"reference": "ghcr.io/x/y", "digest": "sha256:" + "0" * 64}}},
+        )
+        with pytest.raises(helper.HelperError, match="todavía no está implementado"):
+            helper._require_implemented_runtime(manifest)

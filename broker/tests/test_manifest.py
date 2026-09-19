@@ -10,7 +10,7 @@ from likay_broker.manifest import ManifestError, parse_manifest_text, validate_r
 
 VALID_KAL_IN_MANIFEST = textwrap.dedent(
     """\
-    schema_version: 1
+    schema_version: 2
     agent:
       id: com.likay.kal-in
       name: "kal-in"
@@ -23,15 +23,20 @@ VALID_KAL_IN_MANIFEST = textwrap.dedent(
       - gpu.compute
       - audio.microphone
       - docker.sandbox
-    lifecycle:
-      runtime: python-venv
-      entry_point: "agent_core.orchestrator:app"
-      command: "uvicorn"
-      requirements_file: requirements.txt
+    runtime:
+      type: python
       port: 8000
       health_check_path: /
       env:
         AGENT_ENV: production
+      python:
+        entry_point: "agent_core.orchestrator:app"
+        command: "uvicorn"
+        requirements_file: requirements.txt
+    artifact:
+      transport: local-bundle
+    storage:
+      state: persistent
     sandbox:
       filesystem: restricted
       network: host-egress
@@ -46,7 +51,7 @@ VALID_KAL_IN_MANIFEST = textwrap.dedent(
 
 VALID_INSTALLER_MANIFEST = textwrap.dedent(
     """\
-    schema_version: 1
+    schema_version: 2
     agent:
       id: com.likay.installer
     capabilities: [disk.read, disk.write, partition.manage, bootloader.install]
@@ -57,6 +62,40 @@ VALID_INSTALLER_MANIFEST = textwrap.dedent(
     """
 )
 
+VALID_OPENCLAW_OCI_MANIFEST = textwrap.dedent(
+    """\
+    schema_version: 2
+    agent:
+      id: com.openclaw.gateway
+      name: "OpenClaw"
+      version: "0.1.0"
+    capabilities:
+      - network.egress
+      - filesystem.data_dir
+    runtime:
+      type: oci
+      port: 8000
+      health_check_path: /health
+      oci:
+        image:
+          reference: ghcr.io/openclaw/openclaw
+          digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    artifact:
+      transport: local-oci-archive
+    storage:
+      state: persistent
+      workspace: persistent
+      config: persistent
+    secrets:
+      - id: OPENAI_API_KEY
+        required: true
+    sandbox:
+      filesystem: restricted
+      network: host-egress
+      devices: none
+    """
+)
+
 
 def test_parses_valid_kal_in_manifest() -> None:
     manifest = parse_manifest_text(VALID_KAL_IN_MANIFEST)
@@ -64,13 +103,69 @@ def test_parses_valid_kal_in_manifest() -> None:
     assert manifest.short_id == "kal-in"
     assert "llm.local" in manifest.capabilities
     assert manifest.is_service
-    assert manifest.lifecycle["port"] == 8000
+    assert manifest.runtime["port"] == 8000
+    assert manifest.runtime["type"] == "python"
 
 
-def test_installer_manifest_has_no_lifecycle() -> None:
+def test_installer_manifest_has_no_runtime() -> None:
     manifest = parse_manifest_text(VALID_INSTALLER_MANIFEST)
     assert manifest.agent_id == "com.likay.installer"
     assert not manifest.is_service
+
+
+def test_parses_valid_oci_manifest() -> None:
+    """
+    Schema v2 -- runtime.type: oci es solo contrato todavía (el
+    Sandbox Adapter real es Fase C, ver docs/AGENT_INTERFACE.md), pero
+    tiene que poder declararse y validarse igual que python.
+    """
+    manifest = parse_manifest_text(VALID_OPENCLAW_OCI_MANIFEST)
+    assert manifest.runtime["type"] == "oci"
+    assert manifest.runtime["oci"]["image"]["reference"] == "ghcr.io/openclaw/openclaw"
+    assert manifest.artifact["transport"] == "local-oci-archive"
+    assert manifest.storage["workspace"] == "persistent"
+    assert manifest.secrets == [{"id": "OPENAI_API_KEY", "required": True}]
+
+
+def test_rejects_oci_runtime_without_oci_object() -> None:
+    """runtime.type: oci sin runtime.oci -- el oneOf discriminado del schema debe rechazarlo."""
+    bad = VALID_OPENCLAW_OCI_MANIFEST.replace(
+        "  oci:\n    image:\n      reference: ghcr.io/openclaw/openclaw\n"
+        '      digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n',
+        "",
+    )
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
+def test_rejects_oci_image_without_digest() -> None:
+    """Invariante 13 (cadena de suministro): un tag mutable no alcanza, el digest es obligatorio."""
+    bad = VALID_OPENCLAW_OCI_MANIFEST.replace(
+        '      digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n',
+        "",
+    )
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
+def test_rejects_python_runtime_without_python_object() -> None:
+    """runtime.type: python sin runtime.python -- mismo oneOf discriminado que oci."""
+    bad = VALID_KAL_IN_MANIFEST.replace(
+        "  python:\n"
+        '    entry_point: "agent_core.orchestrator:app"\n'
+        '    command: "uvicorn"\n'
+        "    requirements_file: requirements.txt\n",
+        "",
+    )
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
+
+
+def test_rejects_unknown_runtime_type() -> None:
+    """node/native no son valores legales en v2 -- deliberado, ver docs/AGENT_INTERFACE.md."""
+    bad = VALID_KAL_IN_MANIFEST.replace("type: python", "type: node")
+    with pytest.raises(ManifestError, match="schema"):
+        parse_manifest_text(bad)
 
 
 def test_rejects_invalid_yaml() -> None:
@@ -96,7 +191,7 @@ def test_rejects_unknown_capability() -> None:
 
 
 def test_rejects_filesystem_full_not_a_legal_value() -> None:
-    """Invariante 10 de AGENT_INTERFACE.md: filesystem: full no es legal en v1."""
+    """Invariante 10 de AGENT_INTERFACE.md: filesystem: full no es legal en v2."""
     bad = VALID_KAL_IN_MANIFEST.replace("filesystem: restricted", "filesystem: full")
     with pytest.raises(ManifestError, match="schema"):
         parse_manifest_text(bad)

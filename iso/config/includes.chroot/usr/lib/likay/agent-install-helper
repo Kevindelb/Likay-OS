@@ -170,11 +170,25 @@ def _run(cmd: list[str], *, run_as_user: str | None = None) -> None:
 
 
 def _agent_paths(short_id: str) -> dict[str, Path]:
+    """
+    Storage taxonomy (schema v2, ver docs/AGENT_INTERFACE.md sección
+    "Storage"): antes de v2 había un solo directorio "data" genérico --
+    "config"/"state"/"workspace"/"secrets" separan explícitamente qué
+    es config persistente, qué es estado del propio agente, qué es su
+    área de trabajo, y qué son secretos (permisos propios, nunca en el
+    mismo directorio que el resto -- ver op_create_agent). "src"/"venv"
+    siguen siendo específicos del runtime Python; un runtime OCI (Fase
+    C, no implementado todavía) no los necesita pero sí comparte los
+    cuatro directorios de storage.
+    """
     base = LIKAY_AGENT_MOUNT / short_id
     return {
         "base": base,
         "home": base / "home",
-        "data": base / "data",
+        "config": base / "config",
+        "state": base / "state",
+        "workspace": base / "workspace",
+        "secrets": base / "secrets",
         "src": base / "src",
         "venv": base / "venv",
     }
@@ -252,13 +266,32 @@ def op_validate_manifest() -> dict:
         "short_id": manifest.short_id,
         "capabilities": manifest.capabilities,
         "is_service": manifest.is_service,
-        "lifecycle": manifest.lifecycle,
+        "runtime": manifest.runtime,
         "sandbox": manifest.sandbox,
     }
 
 
+def _require_implemented_runtime(manifest: AgentManifest) -> str:
+    """
+    Fase A (schema v2) define el contrato para runtime.type == "oci",
+    pero el Sandbox Adapter real (Podman/Quadlet) es trabajo de Fase C
+    -- ver docs/AGENT_INTERFACE.md. Ante un manifiesto oci válido pero
+    todavía no soportado, esto falla explícito y temprano en vez de
+    dejar que create_agent/install_bundle/generate_unit intenten leer
+    campos de runtime.python que no van a existir.
+    """
+    runtime_type = manifest.runtime.get("type")
+    if runtime_type != "python":
+        raise HelperError(
+            f"runtime.type={runtime_type!r} todavía no está implementado en este helper "
+            "(Fase C del roadmap de plataforma de agentes) -- solo 'python' instala hoy."
+        )
+    return runtime_type
+
+
 def op_create_agent() -> dict:
     manifest = _load_manifest_for_operation()
+    _require_implemented_runtime(manifest)
     linux_user = f"agent-{manifest.short_id}"
     paths = _agent_paths(manifest.short_id)
 
@@ -274,7 +307,14 @@ def op_create_agent() -> dict:
             "useradd", "-r", "-m", "-d", str(paths["home"]), "-s", "/usr/sbin/nologin", linux_user,
         ])
 
-    paths["data"].mkdir(parents=True, exist_ok=True)
+    for name in ("config", "state", "workspace"):
+        paths[name].mkdir(parents=True, exist_ok=True)
+    # secrets, 0700 desde su creación -- nunca comparte permisos con el
+    # resto del storage del agente (ver docs/AGENT_INTERFACE.md,
+    # sección Secrets). El chown -R de abajo todavía le da el dueño
+    # correcto; el modo se fuerza después para no depender del umask.
+    paths["secrets"].mkdir(parents=True, exist_ok=True)
+    paths["secrets"].chmod(0o700)
     _run(["chown", "-R", f"{linux_user}:{linux_user}", str(paths["base"])])
 
     return {"linux_user": linux_user}
@@ -316,14 +356,15 @@ def _disable_installer_network() -> None:
 def op_install_bundle() -> dict:
     manifest = _load_manifest_for_operation()
     if not manifest.is_service:
-        raise HelperError(f"{manifest.agent_id} no tiene lifecycle -- no es un servicio instalable")
+        raise HelperError(f"{manifest.agent_id} no tiene runtime -- no es un servicio instalable")
+    _require_implemented_runtime(manifest)
 
     linux_user = f"agent-{manifest.short_id}"
     paths = _agent_paths(manifest.short_id)
 
-    requirements_file = manifest.lifecycle.get("requirements_file")
+    requirements_file = manifest.runtime.get("python", {}).get("requirements_file")
     if not requirements_file:
-        raise HelperError("lifecycle.requirements_file falta en el manifiesto")
+        raise HelperError("runtime.python.requirements_file falta en el manifiesto")
     # Revalida el path DE NUEVO acá, contra el src/ real del bundle --
     # nunca confía en que el TUI ya lo haya validado antes.
     validate_requirements_path(BUNDLE_SRC_DIR, requirements_file)
@@ -381,30 +422,37 @@ _SANDBOX_BASE_DIRECTIVES = [
 
 def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     """
-    Traduce sandbox:/lifecycle: del manifiesto a directivas systemd
+    Traduce sandbox:/runtime: del manifiesto a directivas systemd
     concretas -- ver la tabla de mapeo en docs/AGENT_INTERFACE.md
-    sección 4. bind_host NUNCA sale del manifiesto (no es un campo
+    sección Sandbox. bind_host NUNCA sale del manifiesto (no es un campo
     legal, ver manifest.py/el schema) -- acá se fuerza --host
     127.0.0.1 por construcción, sin excepción.
     """
     paths = _agent_paths(manifest.short_id)
     sandbox = manifest.sandbox
-    lifecycle = manifest.lifecycle
+    runtime = manifest.runtime
 
     directives = list(_SANDBOX_BASE_DIRECTIVES)
 
     fs = sandbox.get("filesystem", "none")
     directives += ["ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes"]
     if fs == "restricted":
-        directives.append(f"ReadWritePaths={paths['data']}")
+        # Storage taxonomy (schema v2): config/state/workspace son
+        # escritura persistente del propio agente; secrets se expone
+        # también (el proceso necesita LEER sus credenciales) pero ya
+        # quedó 0700 en op_create_agent -- ReadWritePaths no cambia
+        # esos permisos, solo lo que systemd deja escribir/leer más
+        # allá de lo que ProtectSystem=strict permite por defecto.
+        for name in ("config", "state", "workspace", "secrets"):
+            directives.append(f"ReadWritePaths={paths[name]}")
     elif fs != "none":
-        raise HelperError(f"sandbox.filesystem={fs!r} no es un valor legal en v1")
+        raise HelperError(f"sandbox.filesystem={fs!r} no es un valor legal en v2")
 
     network = sandbox.get("network", "none")
     if network == "none":
         directives.append("PrivateNetwork=yes")
     elif network != "host-egress":
-        raise HelperError(f"sandbox.network={network!r} no es un valor legal en v1")
+        raise HelperError(f"sandbox.network={network!r} no es un valor legal en v2")
 
     devices = sandbox.get("devices", "none")
     if devices == "none":
@@ -415,7 +463,7 @@ def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
         for entry in sandbox.get("device_allow", []):
             directives.append(f"DeviceAllow={entry}")
     else:
-        raise HelperError(f"sandbox.devices={devices!r} no es un valor legal en v1")
+        raise HelperError(f"sandbox.devices={devices!r} no es un valor legal en v2")
 
     if "memory_max" in sandbox:
         directives.append(f"MemoryMax={sandbox['memory_max']}")
@@ -424,15 +472,27 @@ def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     if "tasks_max" in sandbox:
         directives.append(f"TasksMax={sandbox['tasks_max']}")
 
-    port = lifecycle.get("port")
-    command = lifecycle.get("command", "")
-    entry_point = lifecycle.get("entry_point", "")
+    # _require_implemented_runtime ya garantizó type == "python" antes
+    # de llegar acá (op_generate_unit lo llama) -- runtime.python existe
+    # siempre que este punto se alcanza.
+    python_runtime = runtime.get("python", {})
+    port = runtime.get("port")
+    command = python_runtime.get("command", "")
+    entry_point = python_runtime.get("entry_point", "")
     exec_start = f"{paths['venv']}/bin/{command} {entry_point} --host 127.0.0.1 --port {port}"
 
     env_lines = "\n".join(
-        f"Environment={k}={v}" for k, v in lifecycle.get("env", {}).items()
+        f"Environment={k}={v}" for k, v in runtime.get("env", {}).items()
     )
-    env_lines += f"\nEnvironment=AGENT_DATA_DIR={paths['data']}"
+    # AGENT_CONFIG_DIR/AGENT_STATE_DIR/AGENT_WORKSPACE_DIR/AGENT_SECRETS_DIR:
+    # storage taxonomy de schema v2 -- reemplaza el AGENT_DATA_DIR único
+    # de v1. Un agente que solo conocía AGENT_DATA_DIR (fixtures v1)
+    # necesita actualizarse al migrar; ver docs/AGENT_INTERFACE.md,
+    # sección "Migración desde schema v1".
+    env_lines += f"\nEnvironment=AGENT_CONFIG_DIR={paths['config']}"
+    env_lines += f"\nEnvironment=AGENT_STATE_DIR={paths['state']}"
+    env_lines += f"\nEnvironment=AGENT_WORKSPACE_DIR={paths['workspace']}"
+    env_lines += f"\nEnvironment=AGENT_SECRETS_DIR={paths['secrets']}"
 
     directive_lines = "\n".join(directives)
 
@@ -467,7 +527,8 @@ WantedBy=multi-user.target
 def op_generate_unit() -> dict:
     manifest = _load_manifest_for_operation()
     if not manifest.is_service:
-        raise HelperError(f"{manifest.agent_id} no tiene lifecycle -- no es un servicio instalable")
+        raise HelperError(f"{manifest.agent_id} no tiene runtime -- no es un servicio instalable")
+    _require_implemented_runtime(manifest)
 
     linux_user = f"agent-{manifest.short_id}"
     unit_text = _systemd_unit_text(manifest, linux_user)
@@ -526,7 +587,7 @@ def op_activate_agent() -> dict:
     # (Main process exited, status=1) justo después de que el agente
     # ya había quedado activo -- la pantalla se quedaba congelada en
     # "Paso 6/6" para siempre, sin ningún mensaje de error visible.
-    port = manifest.lifecycle.get("port")
+    port = manifest.runtime.get("port")
     if port:
         ACTIVE_AGENT_CONF.parent.mkdir(parents=True, exist_ok=True)
         ACTIVE_AGENT_CONF.write_text(f"AGENT_URL=http://127.0.0.1:{port}\n")

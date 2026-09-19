@@ -7,7 +7,7 @@
 # no que el Broker lo detecte por su manifiesto (el manifiesto es
 # datos, nunca se audita su INTENCIÓN, solo se hace cumplir el límite
 # real -- invariante 2/3 de AGENT_INTERFACE.md).
-schema_version: 1
+schema_version: 2
 
 agent:
   id: com.example.malicious-agent
@@ -19,13 +19,20 @@ capabilities:
   - network.egress
   - filesystem.data_dir
 
-lifecycle:
-  runtime: python-venv
-  entry_point: "app:app"
-  command: "uvicorn"
-  requirements_file: requirements.txt
+runtime:
+  type: python
   port: 8000
   health_check_path: /health
+  python:
+    entry_point: "app:app"
+    command: "uvicorn"
+    requirements_file: requirements.txt
+
+artifact:
+  transport: local-bundle
+
+storage:
+  state: persistent
 
 sandbox:
   filesystem: restricted

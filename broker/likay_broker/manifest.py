@@ -56,8 +56,20 @@ class AgentManifest:
         return list(self.raw.get("capabilities", []))
 
     @property
-    def lifecycle(self) -> dict[str, Any]:
-        return dict(self.raw.get("lifecycle", {}))
+    def runtime(self) -> dict[str, Any]:
+        return dict(self.raw.get("runtime", {}))
+
+    @property
+    def artifact(self) -> dict[str, Any]:
+        return dict(self.raw.get("artifact", {}))
+
+    @property
+    def storage(self) -> dict[str, Any]:
+        return dict(self.raw.get("storage", {}))
+
+    @property
+    def secrets(self) -> list[dict[str, Any]]:
+        return list(self.raw.get("secrets", []))
 
     @property
     def sandbox(self) -> dict[str, Any]:
@@ -65,8 +77,8 @@ class AgentManifest:
 
     @property
     def is_service(self) -> bool:
-        """Agente #0 (el instalador) no tiene lifecycle -- no es un servicio."""
-        return bool(self.lifecycle)
+        """Agente #0 (el instalador) no tiene runtime -- no es un servicio."""
+        return bool(self.runtime)
 
 
 def _load_schema() -> dict[str, Any]:
@@ -122,7 +134,7 @@ def parse_manifest_file(path: Path) -> AgentManifest:
 
 def validate_requirements_path(bundle_src_dir: Path, requirements_file: str) -> Path:
     """
-    Valida que requirements_file (del lifecycle del manifiesto) resuelva
+    Valida que requirements_file (de runtime.python del manifiesto) resuelva
     a un archivo DENTRO de bundle_src_dir -- nunca una ruta absoluta,
     nunca "..", nunca un symlink que escape del bundle.
 

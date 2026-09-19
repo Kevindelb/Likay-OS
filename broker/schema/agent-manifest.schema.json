@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://likay-os.dev/schemas/agent-manifest-v1.json",
+  "$id": "https://likay-os.dev/schemas/agent-manifest-v2.json",
   "title": "Likay-OS agent manifest",
-  "description": "Ver docs/AGENT_INTERFACE.md -- este schema es la fuente de verdad del formato, el documento es prosa y razones.",
+  "description": "Ver docs/AGENT_INTERFACE.md -- este schema es la fuente de verdad del formato, el documento es prosa y razones. v2: runtime-neutral (ver seccion 'Migracion desde schema v1' del documento) -- reemplaza lifecycle.requirements_file por runtime.type + sub-objeto especifico de cada tipo.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "agent", "capabilities"],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "agent": {
       "type": "object",
@@ -47,28 +47,14 @@
         ]
       }
     },
-    "lifecycle": {
+    "runtime": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["type"],
       "properties": {
-        "runtime": {"enum": ["python-venv"]},
-        "entry_point": {
-          "type": "string",
-          "minLength": 1,
-          "not": {"pattern": "\\s"},
-          "description": "Un solo argumento posicional (p.ej. 'agent_core.orchestrator:app'). Sin espacios -- de lo contrario un valor como 'app --host 0.0.0.0' inyectaría flags extra después del --host 127.0.0.1 forzado en ExecStart, rompiendo la garantía de bind_host de docs/AGENT_INTERFACE.md."
-        },
-        "command": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^[A-Za-z0-9_.-]+$",
-          "description": "Nombre de un binario dentro de <venv>/bin/, nunca una ruta. Sin '/' -- de lo contrario un valor como '../../../../usr/bin/sh' escaparía del venv."
-        },
-        "requirements_file": {
-          "type": "string",
-          "minLength": 1,
-          "not": {"pattern": "(^/|\\.\\.|^~)"},
-          "description": "Un solo archivo, ruta relativa dentro de src/ del bundle. Nunca absoluta, nunca con '..'."
+        "type": {
+          "enum": ["python", "oci"],
+          "description": "Solo estos dos en v2 -- node/native quedan deliberadamente sin declarar hasta que un caso real (no un caso imaginado) demuestre que hacen falta. Ver docs/AGENT_INTERFACE.md."
         },
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "health_check_path": {"type": "string", "minLength": 1},
@@ -80,6 +66,104 @@
             "pattern": "^[^\r\n]*$",
             "description": "Sin CR/LF -- de lo contrario un valor como 'x\\nUser=root\\n' se interpola crudo en Environment={k}={v} dentro de la unidad systemd generada (_systemd_unit_text) e inyecta una directiva propia (p.ej. User=root) DESPUÉS del User={linux_user} original -- la última asignación gana, escalando el servicio del agente a root."
           }
+        },
+        "python": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entry_point", "command", "requirements_file"],
+          "properties": {
+            "entry_point": {
+              "type": "string",
+              "minLength": 1,
+              "not": {"pattern": "\\s"},
+              "description": "Un solo argumento posicional (p.ej. 'agent_core.orchestrator:app'). Sin espacios -- de lo contrario un valor como 'app --host 0.0.0.0' inyectaría flags extra después del --host 127.0.0.1 forzado en ExecStart, rompiendo la garantía de bind_host de docs/AGENT_INTERFACE.md."
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_.-]+$",
+              "description": "Nombre de un binario dentro de <venv>/bin/, nunca una ruta. Sin '/' -- de lo contrario un valor como '../../../../usr/bin/sh' escaparía del venv."
+            },
+            "requirements_file": {
+              "type": "string",
+              "minLength": 1,
+              "not": {"pattern": "(^/|\\.\\.|^~)"},
+              "description": "Un solo archivo, ruta relativa dentro de src/ del bundle. Nunca absoluta, nunca con '..'."
+            }
+          }
+        },
+        "oci": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["image"],
+          "properties": {
+            "image": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reference", "digest"],
+              "properties": {
+                "reference": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$",
+                  "description": "Referencia de imagen OCI (registry/repo/nombre), sin tag -- el tag no fija nada (mutable), la identidad real es el digest. Nunca ':latest' ni ningún tag: ver 'digest'."
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "description": "Fija la imagen exacta -- invariante 13 (cadena de suministro no confiable): un tag es mutable y puede apuntar a contenido distinto entre la aprobación del usuario y la instalación real. Obligatorio, no opcional."
+                }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "python"}}, "required": ["type"]},
+          "then": {"required": ["python"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "oci"}}, "required": ["type"]},
+          "then": {"required": ["oci"]}
+        }
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transport": {
+          "enum": ["local-bundle", "local-oci-archive"],
+          "description": "Cómo llegó el artefacto al sistema -- separado a propósito de runtime.type (qué ejecutar). Ninguno de los dos valores de v2 implica red durante la instalación: local-bundle es el USB de siempre (código fuente + requirements_file); local-oci-archive es un archivo de imagen ya exportado (podman load, nunca pull). Un registry remoto/autenticado queda fuera de v2."
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "config": {"enum": ["persistent"]},
+        "state": {"enum": ["persistent"]},
+        "workspace": {"enum": ["persistent"]},
+        "secrets": {"enum": ["private"]}
+      },
+      "description": "Declarativo únicamente -- el instalador crea estos directorios fuera del código del agente sin importar lo que el manifiesto declare acá (ver _agent_paths en agent-install-helper). v2 no tiene valores 'ephemeral'/'shared'; ver docs/AGENT_INTERFACE.md."
+    },
+    "secrets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Z_][A-Z0-9_]*$",
+            "description": "Nombre lógico del secreto (p.ej. OPENAI_API_KEY) -- nunca el valor, que jamás vive en el manifiesto."
+          },
+          "required": {"type": "boolean"}
         }
       }
     },
@@ -89,7 +173,7 @@
       "properties": {
         "filesystem": {
           "enum": ["restricted", "none"],
-          "description": "'full' no es un valor legal en v1 -- ver docs/AGENT_INTERFACE.md invariante 10."
+          "description": "'full' no es un valor legal en v2 -- ver docs/AGENT_INTERFACE.md invariante 10."
         },
         "network": {
           "enum": ["none", "host-egress"]
