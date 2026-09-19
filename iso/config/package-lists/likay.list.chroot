@@ -168,6 +168,22 @@ keyutils
 squashfs-tools
 rsync
 
+# Fase B/C del roadmap de plataforma de agentes (ver
+# docs/AGENT_INTERFACE.md, runtime.type: oci) -- podman corre "podman
+# load" (Fase B, agent-install-helper op_load_oci_image) y más
+# adelante los contenedores rootless de agentes reales (Fase C, vía
+# Quadlet). uidmap/slirp4netns/fuse-overlayfs son las dependencias
+# reales de Podman ROOTLESS confirmadas en el spike de Fase 0 (QEMU,
+# 2026-09-19: usuario de sistema nologin, sin sesión de login, sin
+# loginctl linger -- funcionó con esto instalado). Sin necesidad de
+# Docker: Podman no tiene daemon, corre directo bajo el usuario
+# dedicado del agente vía systemd, coherente con el resto del diseño
+# (ningún servicio de sistema extra que mediar).
+podman
+uidmap
+slirp4netns
+fuse-overlayfs
+
 # ntfs-3g: probando el camino "Alongside" (dual-boot automático) en QEMU
 # con un disco de prueba Windows+NTFS (2026-09-15) -- "Install alongside"
 # nunca aparecía como opción pese a que os-prober SÍ detectaba bien

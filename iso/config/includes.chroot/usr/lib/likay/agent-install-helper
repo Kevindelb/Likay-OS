@@ -56,6 +56,13 @@ USB_BUNDLE_MOUNT = Path("/mnt/likay-bundle-usb")
 BUNDLE_STAGING = Path("/var/lib/likay-agent-install/bundle-staging")
 MANIFEST_PATH = BUNDLE_STAGING / "agent.yaml"
 BUNDLE_SRC_DIR = BUNDLE_STAGING / "src"
+# Fase B del roadmap de plataforma de agentes (ver docs/AGENT_INTERFACE.md
+# sección 4, artifact.transport): un bundle runtime.type: oci trae
+# image.tar en la raíz del USB en vez de src/ -- el archivo exportado
+# (podman save/equivalente) que load_oci_image carga con "podman load",
+# nunca un pull de red. Mismo mecanismo de staging que src/ (TOCTOU
+# cerrado por construcción, ver el comentario grande de arriba).
+BUNDLE_IMAGE_PATH = BUNDLE_STAGING / "image.tar"
 ACTIVE_AGENT_CONF = Path("/etc/likay-os/active-agent.conf")
 
 # Red temporal SOLO para resolver "pip install -r requirements.txt" --
@@ -90,6 +97,7 @@ OPERATIONS = (
     "generate_unit",
     "activate_agent",
     "reboot",
+    "load_oci_image",
 )
 
 # Unidades de infraestructura que matchean el glob likay-agent-*.service
@@ -234,13 +242,14 @@ def op_mount_bundle() -> dict:
 
     usb_manifest_path = USB_BUNDLE_MOUNT / "agent.yaml"
     usb_src_dir = USB_BUNDLE_MOUNT / "src"
+    usb_image_path = USB_BUNDLE_MOUNT / "image.tar"
     if not usb_manifest_path.is_file():
         raise HelperError(f"{usb_manifest_path} no existe en el medio montado")
 
     # Copia a staging root-owned de una sola vez -- ver el comentario
     # largo junto a BUNDLE_STAGING (TOCTOU). Todo lo que sigue
-    # (validate_manifest, create_agent, install_bundle, generate_unit)
-    # lee de acá, nunca vuelve a tocar el USB.
+    # (validate_manifest, create_agent, install_bundle, generate_unit,
+    # load_oci_image) lee de acá, nunca vuelve a tocar el USB.
     if BUNDLE_STAGING.exists():
         shutil.rmtree(BUNDLE_STAGING)
     BUNDLE_STAGING.mkdir(parents=True, mode=0o700)
@@ -249,6 +258,13 @@ def op_mount_bundle() -> dict:
         shutil.copytree(usb_src_dir, BUNDLE_SRC_DIR, symlinks=False)
     else:
         BUNDLE_SRC_DIR.mkdir()
+    # image.tar (runtime.type: oci, ver BUNDLE_IMAGE_PATH) es opcional
+    # acá por el mismo motivo que src/ lo es -- mount_bundle copia lo
+    # que haya sin todavía saber qué runtime declara el manifiesto
+    # (eso lo decide validate_manifest, un paso después, a propósito:
+    # mount_bundle nunca interpreta el manifiesto, solo transporta).
+    if usb_image_path.is_file():
+        shutil.copy2(usb_image_path, BUNDLE_IMAGE_PATH)
 
     # El USB ya cumplió su única función (transporte, invariante de
     # docs/AGENT_INTERFACE.md) -- desmontarlo acá, no más tarde, es lo
@@ -256,7 +272,11 @@ def op_mount_bundle() -> dict:
     # que el medio siga conectado ni sea el mismo.
     _run(["umount", str(USB_BUNDLE_MOUNT)])
 
-    return {"manifest_path": str(MANIFEST_PATH), "src_dir": str(BUNDLE_SRC_DIR)}
+    return {
+        "manifest_path": str(MANIFEST_PATH),
+        "src_dir": str(BUNDLE_SRC_DIR),
+        "image_path": str(BUNDLE_IMAGE_PATH) if BUNDLE_IMAGE_PATH.is_file() else None,
+    }
 
 
 def op_validate_manifest() -> dict:
@@ -407,6 +427,79 @@ def op_install_bundle() -> dict:
         _disable_installer_network()
 
     return {"installed": True}
+
+
+def op_load_oci_image() -> dict:
+    """
+    Fase B del roadmap de plataforma de agentes (ver
+    docs/AGENT_INTERFACE.md sección 4, artifact.transport) -- carga la
+    imagen ya transportada (BUNDLE_IMAGE_PATH, nunca un pull de red,
+    invariante 15) y verifica que su digest real coincida con
+    runtime.oci.image.digest ANTES de dejarla en el almacenamiento
+    local de Podman. Si no coincide, la borra de inmediato -- nunca
+    queda una imagen sin verificar en el store, ni por un instante más
+    de lo necesario para chequearla (invariante 13, cadena de
+    suministro no confiable).
+
+    Operación separada de create_agent/install_bundle/generate_unit
+    (que siguen exigiendo runtime.type == "python" vía
+    _require_implemented_runtime) a propósito: Fase B resuelve
+    transporte + integridad de forma aislada, antes de que exista el
+    Sandbox Adapter OCI completo (Fase C, no implementado todavía) --
+    mismo criterio de secuencia que el roadmap ya define. Corre como
+    root (el proceso del helper, vía pkexec) y carga a la storage de
+    Podman de root, no a la del usuario del agente todavía -- a quién
+    pertenece la imagen cargada es una decisión de Fase C (create_agent
+    ahí, cuando exista, es quien sabe qué usuario dedicado la va a
+    correr).
+    """
+    manifest = _load_manifest_for_operation()
+    runtime = manifest.runtime
+    if runtime.get("type") != "oci":
+        raise HelperError(
+            f"runtime.type={runtime.get('type')!r} no usa load_oci_image -- solo 'oci' lo necesita"
+        )
+
+    if not BUNDLE_IMAGE_PATH.is_file():
+        raise HelperError(f"{BUNDLE_IMAGE_PATH} no existe -- ¿el bundle traía image.tar?")
+
+    declared_digest = runtime.get("oci", {}).get("image", {}).get("digest")
+    if not declared_digest:
+        raise HelperError("runtime.oci.image.digest falta en el manifiesto")
+
+    # "podman load" imprime "Loaded image: <referencia>" por stdout --
+    # se captura esa referencia EXACTA para inspeccionar después
+    # precisamente la imagen recién cargada, en vez de adivinar por
+    # runtime.oci.image.reference (que podría no coincidir con el
+    # nombre/tag real embebido en el archivo).
+    load_result = subprocess.run(
+        ["podman", "load", "-i", str(BUNDLE_IMAGE_PATH)],
+        check=True, capture_output=True, text=True,
+    )
+    loaded_ref = None
+    for line in load_result.stdout.splitlines():
+        if line.startswith("Loaded image:"):
+            loaded_ref = line.removeprefix("Loaded image:").strip()
+            break
+    if not loaded_ref:
+        raise HelperError(f"no se pudo determinar qué imagen cargó podman load: {load_result.stdout!r}")
+
+    inspect_result = subprocess.run(
+        ["podman", "inspect", "--format", "{{.Digest}}", loaded_ref],
+        check=True, capture_output=True, text=True,
+    )
+    actual_digest = inspect_result.stdout.strip()
+
+    if actual_digest != declared_digest:
+        subprocess.run(
+            ["podman", "rmi", "-f", loaded_ref], check=False, capture_output=True, text=True,
+        )
+        raise HelperError(
+            f"digest de la imagen cargada ({actual_digest}) no coincide con "
+            f"runtime.oci.image.digest declarado ({declared_digest}) -- imagen rechazada y borrada"
+        )
+
+    return {"loaded_image": loaded_ref, "digest": actual_digest}
 
 
 _SANDBOX_BASE_DIRECTIVES = [
@@ -630,6 +723,7 @@ _DISPATCH = {
     "generate_unit": op_generate_unit,
     "activate_agent": op_activate_agent,
     "reboot": op_reboot,
+    "load_oci_image": op_load_oci_image,
 }
 
 

@@ -230,3 +230,22 @@ class TestRequireImplementedRuntime:
         )
         with pytest.raises(helper.HelperError, match="todavía no está implementado"):
             helper._require_implemented_runtime(manifest)
+
+
+class TestLoadOciImageGuards:
+    """
+    op_load_oci_image (Fase B, ver docs/AGENT_INTERFACE.md sección 4)
+    necesita el binario real de podman + archivos reales en disco para
+    su camino principal -- fuera de alcance de un test unitario, mismo
+    criterio que create_agent/install_bundle/mount_bundle (ver
+    docstring del módulo). Solo se testea acá el guard de tipo, que
+    corre ANTES de tocar cualquier archivo.
+    """
+
+    def test_python_runtime_rejects_load_oci_image(self, helper, monkeypatch) -> None:
+        monkeypatch.setattr(
+            helper, "_load_manifest_for_operation",
+            lambda: _manifest({"filesystem": "none", "network": "none", "devices": "none"}),
+        )
+        with pytest.raises(helper.HelperError, match="no usa load_oci_image"):
+            helper.op_load_oci_image()

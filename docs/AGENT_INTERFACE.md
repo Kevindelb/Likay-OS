@@ -287,14 +287,15 @@ imagen Docker oficial pensada para correr como usuario no-root — el
 mecanismo que v2 necesita coincide con lo que ese ecosistema ya provee,
 no hace falta inventar un empaquetado propio.
 
-**Aún no implementado en `agent-install-helper`.** `create_agent`,
-`install_bundle`, y `generate_unit` llaman a
-`_require_implemented_runtime()`, que rechaza explícito cualquier
-`runtime.type` distinto de `python` con un error claro, en vez de
-intentar leer campos de `runtime.python` que no existirían. Un
-manifiesto `oci` válido sirve hoy para diseñar/validar el contrato por
-adelantado (y para dogfooding contra un agente real como OpenClaw en
-Fase C), no para instalar de verdad todavía.
+**El Sandbox Adapter todavía no está implementado; el transporte sí
+(Fase B, ver sección 4).** `create_agent`, `install_bundle`, y
+`generate_unit` llaman a `_require_implemented_runtime()`, que rechaza
+explícito cualquier `runtime.type` distinto de `python` con un error
+claro, en vez de intentar leer campos de `runtime.python` que no
+existirían — instalar un agente OCI completo (usuario dedicado,
+Quadlet, sandbox) sigue siendo Fase C. Lo que SÍ existe hoy, separado a
+propósito de esas tres operaciones: `load_oci_image`, que carga la
+imagen ya transportada y verifica su digest — ver sección 4.
 
 ## 4. Artifact — transporte y procedencia
 
@@ -317,11 +318,39 @@ instalación (invariante 15):
   copiados a un staging root-owned por `mount_bundle`, el mismo
   mecanismo que ya cierra el TOCTOU del manifiesto (ver sección 7).
 - **`local-oci-archive`** — un archivo de imagen ya exportado
-  (`podman save`/equivalente, cargado con `podman load`, nunca `pull`
-  durante la instalación). Fase B del roadmap de plataforma de
-  agentes: todavía no implementado, pero la separación de `artifact`
-  respecto de `runtime` es justamente lo que permite construirlo
-  después sin volver a tocar el schema de `runtime.oci`.
+  (`podman save`/equivalente), transportado en la raíz del bundle
+  (`<bundle>/image.tar`, junto a `agent.yaml`, en vez de `src/`) y
+  cargado con `podman load` — nunca `pull` durante la instalación.
+  **Implementado (Fase B, 2026-09-19)**: `mount_bundle` transporta
+  `image.tar` al mismo staging root-owned que ya usa para `src/`
+  (mismo mecanismo TOCTOU, sección 7); la nueva operación
+  `load_oci_image` del helper corre `podman load`, captura la
+  referencia real que cargó (`"Loaded image: ..."` en su stdout — no
+  se asume que coincide con `runtime.oci.image.reference`), y compara
+  el digest real (`podman inspect --format '{{.Digest}}'`) contra
+  `runtime.oci.image.digest` — si no coincide, borra la imagen del
+  store (`podman rmi -f`) y falla, nunca deja una imagen sin verificar
+  ahí ni un instante más de lo necesario. Separada a propósito de
+  `create_agent`/`install_bundle`/`generate_unit` (que siguen
+  rechazando `runtime.type: oci`, sección 3.2): Fase B resuelve
+  transporte + integridad de forma aislada, antes de que exista el
+  Sandbox Adapter completo. Corre a la storage de Podman de *root* —
+  a qué usuario dedicado termina perteneciendo la imagen cargada es
+  una decisión de Fase C, no de Fase B.
+
+  **Gotcha real, confirmado en QEMU (2026-09-19): el digest que hay que
+  poner en `runtime.oci.image.digest` es el que reporta Podman DESPUÉS
+  de cargar el archivo, no el `RepoDigest` que mostraba el registry
+  antes de exportarlo.** Probado con `docker pull hello-world` +
+  `docker save` (RepoDigest `sha256:5e23...`) — tras `podman load` del
+  mismo archivo, `podman inspect --format '{{.Digest}}'` reportó un
+  digest DISTINTO (`sha256:d1a8...`). El roundtrip `save`/`load` no
+  preserva el digest original del manifiesto del registry (formatos de
+  archivo/reempaquetado distintos entre herramientas). Consecuencia
+  práctica para quien prepare un bundle OCI: calcular el digest a poner
+  en el manifiesto corriendo `podman load` + `podman inspect` sobre el
+  MISMO archivo que va a viajar en el bundle — nunca copiar el digest
+  que mostraba `docker inspect`/el registry antes de exportar.
 
 **Explícitamente fuera de v2**: un registry remoto/autenticado como
 transporte (`docker pull` en el momento de instalar). Documentado en
