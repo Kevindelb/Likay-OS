@@ -261,7 +261,7 @@ confiable (invariante 13) — esto acota el blast radius de ese código a
 un usuario recién creado y sandboxeado después, no a compromiso total
 del sistema.
 
-### 3.2 `runtime.oci` (contrato definido, Sandbox Adapter en Fase C)
+### 3.2 `runtime.oci` (implementado, Fase C — Sandbox Adapter OCI)
 
 ```yaml
 oci:
@@ -287,15 +287,63 @@ imagen Docker oficial pensada para correr como usuario no-root — el
 mecanismo que v2 necesita coincide con lo que ese ecosistema ya provee,
 no hace falta inventar un empaquetado propio.
 
-**El Sandbox Adapter todavía no está implementado; el transporte sí
-(Fase B, ver sección 4).** `create_agent`, `install_bundle`, y
-`generate_unit` llaman a `_require_implemented_runtime()`, que rechaza
-explícito cualquier `runtime.type` distinto de `python` con un error
-claro, en vez de intentar leer campos de `runtime.python` que no
-existirían — instalar un agente OCI completo (usuario dedicado,
-Quadlet, sandbox) sigue siendo Fase C. Lo que SÍ existe hoy, separado a
-propósito de esas tres operaciones: `load_oci_image`, que carga la
-imagen ya transportada y verifica su digest — ver sección 4.
+**Implementado (Fase C, 2026-09-20) — Sandbox Adapter completo vía
+Quadlet (`podman-systemd.unit(5)`).** `create_agent` asigna, además del
+usuario Linux dedicado (`useradd -r`), un rango subuid/subgid fijo
+(`usermod --add-subuids/--add-subgids`) — un usuario de sistema no lo
+recibe automáticamente, a diferencia de un usuario normal.
+`generate_unit` despacha por `runtime.type`: `python` sigue escribiendo
+un `.service` a mano (sección 3.1); `oci` escribe un Quadlet
+`.container` en `/etc/containers/systemd/`, que el generador de Podman
+convierte en una unidad real (`likay-agent-<short_id>.service`) al
+hacer `daemon-reload`/boot — mismo nombre resultante que el caso
+Python, así que `activate_agent` no necesita saber cuál de los dos lo
+generó. `[Container] User=` nunca se usa (fijaría el usuario DENTRO de
+la imagen, que no controlamos); la identidad de host se fija con
+`[Service] User=`/`Group=`, igual que en el caso Python.
+
+**Hallazgo real, el más costoso de Fase C (2026-09-20): un simple
+`setuid()`/`setgid()` no alcanza para que Podman rootless funcione.**
+`load_oci_image` corre un segundo `podman load` como el usuario
+dedicado del agente (ver sección 4) para dejar la imagen en SU storage
+rootless, no la de root. Con un `subprocess.run(user=..., group=...)`
+directo (equivalente a un `setuid`/`setgid` plano), esto fallaba de
+forma reproducible con `potentially insufficient UIDs or GIDs
+available in user namespace ... lchown /etc/shadow: invalid argument`
+al descomprimir cualquier capa con un layer de SO real (`/etc/shadow`,
+etc.) — con `/etc/subuid`/`/etc/subgid` ya correctos (confirmado con
+`getsubids`) y storage completamente limpia (se descartó la hipótesis
+de estado corrupto por reintentos repitiendo el intento contra una
+storage recién borrada). El diagnóstico real, aislado a mano con
+`newuidmap` fuera de Podman: fallaba con `write to uid_map failed:
+Operation not permitted` — un `setuid` plano deja al proceso corriendo
+bajo el cgroup de la sesión de quien invocó `sudo`/`pkexec` (root), sin
+la delegación de cgroup que el kernel exige para permitir
+`CLONE_NEWUSER` con un mapeo subordinado no trivial ahí. La corrección:
+envolver ese `podman load` en `systemd-run --uid=... --gid=...
+--property=Delegate=yes`, que crea una unidad transitoria con su propio
+cgroup delegado desde cero — confirmado que basta, sin ninguna otra
+advertencia de Podman. Por el mismo motivo, el Quadlet generado
+(`_quadlet_unit_text`) lleva `Delegate=yes` en su propio `[Service]`
+explícito: el contenedor, cuando arranca de verdad vía systemd
+(`activate_agent`), necesita exactamente la misma delegación.
+
+`activate_agent` también despacha por `runtime_type`: una unidad
+generada por Quadlet no puede `systemctl enable`arse (falla con "Unit
+... is transient or generated") — se activa con `systemctl start`
+únicamente, y se desactiva (al reemplazar un agente OCI anterior)
+borrando su archivo `.container` fuente + `systemctl stop`, nunca
+`systemctl disable --now` (falla igual de explícito).
+
+Verificado en QEMU de punta a punta, en un solo intento limpio tras
+corregir el hallazgo de `Delegate=yes`: `mount_bundle` →
+`validate_manifest` → `create_agent` → `load_oci_image` →
+`generate_unit` → `activate_agent` contra un fixture propio
+(`likay-test-fixture`, una imagen mínima basada en
+`python:3.12-alpine` sirviendo `python3 -m http.server 8000`, nunca
+tocada por quien construyó el Broker) — `systemctl status` mostró el
+proceso real del contenedor corriendo dentro del cgroup de la unidad, y
+`curl http://127.0.0.1:8000/` devolvió `200 OK`.
 
 ## 4. Artifact — transporte y procedencia
 
@@ -334,9 +382,12 @@ instalación (invariante 15):
   `create_agent`/`install_bundle`/`generate_unit` (que siguen
   rechazando `runtime.type: oci`, sección 3.2): Fase B resuelve
   transporte + integridad de forma aislada, antes de que exista el
-  Sandbox Adapter completo. Corre a la storage de Podman de *root* —
-  a qué usuario dedicado termina perteneciendo la imagen cargada es
-  una decisión de Fase C, no de Fase B.
+  Sandbox Adapter completo. La primera carga corre a la storage de
+  Podman de *root*, únicamente para verificar el digest antes de
+  exponerle nada al usuario del agente — `load_oci_image` (Fase C, ver
+  sección 3.2) copia la MISMA imagen ya verificada a la storage
+  rootless del usuario dedicado, que es donde el Quadlet generado
+  espera encontrarla al arrancar el contenedor de verdad.
 
   **Gotcha real, confirmado en QEMU (2026-09-19): el digest que hay que
   poner en `runtime.oci.image.digest` es el que reporta Podman DESPUÉS
@@ -639,11 +690,14 @@ audit:
   event_prefix: agent_kal-in
 ```
 
-### 12.2 OpenClaw (runtime OCI, contrato definido — Fase C para instalar de verdad)
+### 12.2 OpenClaw (runtime OCI, mecanismo probado; imagen real pendiente)
 
-Ilustrativo, no instalable todavía (`_require_implemented_runtime`
-lo rechaza en el helper actual). Sirve como el manifiesto contra el
-que Fase C valida el Sandbox Adapter OCI.
+El Sandbox Adapter OCI ya está implementado y verificado de punta a
+punta (sección 3.2), pero contra un fixture propio, deliberadamente NO
+construido para este caso — la prueba de portabilidad más fuerte. Este
+manifiesto de OpenClaw, el caso que motivó todo el rediseño, sigue
+siendo ilustrativo hasta correr la misma verificación contra su imagen
+real publicada (pendiente, fuera del alcance ya cerrado de Fase C).
 
 ```yaml
 schema_version: 2

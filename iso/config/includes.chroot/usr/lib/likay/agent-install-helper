@@ -112,7 +112,7 @@ class HelperError(RuntimeError):
     pass
 
 
-def _run(cmd: list[str], *, run_as_user: str | None = None) -> None:
+def _run(cmd: list[str], *, run_as_user: str | None = None, needs_userns: bool = False) -> None:
     """
     Único punto de ejecución de subprocesos de este archivo -- SIEMPRE
     una lista de argumentos (nunca shell=True, nunca una string
@@ -160,20 +160,71 @@ def _run(cmd: list[str], *, run_as_user: str | None = None) -> None:
     el hijo -- el usuario del agente recién creado (useradd -r) no
     pertenece a ningún grupo extra de todos modos, así que esto no
     cambia el comportamiento real, solo lo deja garantizado en vez de
-    implícito.
+    implícito. No aplica cuando needs_userns=True -- ver abajo.
+
+    needs_userns -- hallazgo real (2026-09-20, probando load_oci_image
+    en QEMU, único attempt limpio de varios): un subprocess.run(user=...)
+    corriente (setuid/setgid directo, sin más) NO alcanza para que
+    Podman rootless pueda crear su propio user namespace con el rango
+    subuid/subgid completo. Confirmado a mano: "podman load" como
+    agent-oci-fixture fallaba SIEMPRE con "potentially insufficient
+    UIDs or GIDs available in user namespace (requested 0:42 for
+    /etc/shadow) ... lchown /etc/shadow: invalid argument", incluso con
+    /etc/subuid y /etc/subgid ya correctos (confirmado con getsubids) y
+    con la storage del usuario completamente limpia (se descartó la
+    hipótesis de estado corrupto por reintentos). El diagnóstico real:
+    "newuidmap" (setuid root, se ejecuta para escribir el mapeo
+    completo) fallaba con "write to uid_map failed: Operation not
+    permitted" -- un simple setuid(2)/setgid(2) vía subprocess.run(user=)
+    dijea al proceso corriendo bajo el cgroup de sesión de QUIEN llamó a
+    sudo/pkexec (root), sin la delegación de cgroup que el kernel exige
+    para permitir CLONE_NEWUSER con un mapeo no trivial ahí. Probado y
+    confirmado que alcanza con envolver el comando en
+    "systemd-run --uid=... --gid=... --property=Delegate=yes" -- crea
+    una unidad transitoria con su PROPIO cgroup delegado desde cero, y
+    ahí "podman load" cargó la imagen sin ninguna advertencia. Esto es,
+    además, coherente con por qué las unidades Quadlet generadas
+    (_quadlet_unit_text) llevan su propio "Delegate=yes" explícito --
+    mismo requisito, mismo mecanismo, para cuando el contenedor arranca
+    de verdad vía systemd en vez de por este helper.
     """
     env = None
     group = None
     extra_groups = None
+    cwd = None
     if run_as_user is not None:
         pw = pwd.getpwnam(run_as_user)
+        if needs_userns:
+            cmd = [
+                "systemd-run", "--pipe", "--wait", "--collect",
+                f"--uid={pw.pw_uid}", f"--gid={pw.pw_gid}",
+                "--property=Delegate=yes",
+                f"--property=WorkingDirectory={pw.pw_dir}",
+                f"--setenv=HOME={pw.pw_dir}",
+                "--", *cmd,
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return
         env = dict(os.environ)
         env["HOME"] = pw.pw_dir
         group = pw.pw_gid
         extra_groups = []
+        # Hallazgo real (2026-09-19, probando load_oci_image en QEMU):
+        # subprocess.run(user=...) baja el UID/GID pero NUNCA cambia el
+        # cwd -- el hijo hereda el directorio de trabajo del propio
+        # proceso del helper (el de quien invocó pkexec, no
+        # necesariamente accesible para run_as_user). "podman load"
+        # falló con "cannot chdir to /home/ubuntu: Permission denied"
+        # (el cwd real de la sesión desde la que se probó esto a mano)
+        # -- python3 -m venv/pip nunca lo mostraron porque no intentan
+        # un chdir a su cwd de arranque, pero el riesgo era el mismo
+        # para cualquier run_as_user, no específico de Podman. Fuerza
+        # el cwd al home real del usuario, mismo criterio que ya se
+        # usa para HOME.
+        cwd = pw.pw_dir
     subprocess.run(
         cmd, check=True, capture_output=True, text=True,
-        user=run_as_user, group=group, extra_groups=extra_groups, env=env,
+        user=run_as_user, group=group, extra_groups=extra_groups, env=env, cwd=cwd,
     )
 
 
@@ -291,27 +342,51 @@ def op_validate_manifest() -> dict:
     }
 
 
-def _require_implemented_runtime(manifest: AgentManifest) -> str:
+_KNOWN_RUNTIME_TYPES = ("python", "oci")
+
+# Rango fijo, no calculado por agente -- lícito porque v1 sigue
+# soportando un solo agente activo a la vez (ver docs/AGENT_INTERFACE.md,
+# "Fuera de alcance de v2"): activate_agent ya hace userdel del usuario
+# anterior antes de que este pueda coexistir con uno nuevo, así que no
+# hay riesgo real de colisión de rangos entre dos usuarios vivos al
+# mismo tiempo.
+#
+# 1000000, no 100000 -- hallazgo real (2026-09-19, probando esto en
+# QEMU): 100000-165535 es el rango que useradd (SIN -r, usuario
+# "normal") asigna automáticamente al PRIMER usuario no-sistema que se
+# cree en cualquier máquina Debian/Ubuntu (default de
+# SUB_UID_MIN/SUB_UID_COUNT en /etc/login.defs) -- exactamente el
+# usuario sudo que Calamares crea durante la instalación. Confirmado
+# en vivo: el usuario "ubuntu" del propio medio live ya tenía ese rango
+# asignado, y coincidía bit a bit con el que create_agent le asignaba
+# a mano al usuario del agente -- dos usuarios rootless con el MISMO
+# rango subuid/subgid en la misma máquina, condición que rompe el
+# aislamiento que ese rango existe para dar. 1000000 está muy por
+# encima de lo que cualquier asignación secuencial normal (100000,
+# 165536, 231072, ...) alcanzaría con una cantidad razonable de
+# usuarios reales en el sistema instalado.
+_OCI_SUBID_RANGE = "1000000-1065535"
+
+
+def _require_known_runtime_type(manifest: AgentManifest) -> str:
     """
-    Fase A (schema v2) define el contrato para runtime.type == "oci",
-    pero el Sandbox Adapter real (Podman/Quadlet) es trabajo de Fase C
-    -- ver docs/AGENT_INTERFACE.md. Ante un manifiesto oci válido pero
-    todavía no soportado, esto falla explícito y temprano en vez de
-    dejar que create_agent/install_bundle/generate_unit intenten leer
-    campos de runtime.python que no van a existir.
+    Falla explícito y temprano ante un runtime.type que el schema no
+    conoce (defensa en profundidad -- ya lo rechaza el schema, esto
+    cubre el caso de un AgentManifest armado a mano sin pasar por
+    parse_manifest_text, como en tests). No decide QUÉ hacer con cada
+    tipo -- eso lo decide cada operación (create_agent/install_bundle/
+    load_oci_image/generate_unit) por su cuenta, python y oci están
+    igual de implementados desde Fase C.
     """
     runtime_type = manifest.runtime.get("type")
-    if runtime_type != "python":
-        raise HelperError(
-            f"runtime.type={runtime_type!r} todavía no está implementado en este helper "
-            "(Fase C del roadmap de plataforma de agentes) -- solo 'python' instala hoy."
-        )
+    if runtime_type not in _KNOWN_RUNTIME_TYPES:
+        raise HelperError(f"runtime.type={runtime_type!r} no es un valor legal en v2")
     return runtime_type
 
 
 def op_create_agent() -> dict:
     manifest = _load_manifest_for_operation()
-    _require_implemented_runtime(manifest)
+    runtime_type = _require_known_runtime_type(manifest)
     linux_user = f"agent-{manifest.short_id}"
     paths = _agent_paths(manifest.short_id)
 
@@ -326,6 +401,20 @@ def op_create_agent() -> dict:
         _run([
             "useradd", "-r", "-m", "-d", str(paths["home"]), "-s", "/usr/sbin/nologin", linux_user,
         ])
+        if runtime_type == "oci":
+            # useradd -r (usuario de SISTEMA) no asigna subuid/subgid
+            # solo -- ese auto-asignado de /etc/login.defs
+            # (SUB_UID_MIN/SUB_UID_COUNT) es específico de useradd SIN
+            # -r. Sin este rango, Podman rootless no puede crear su
+            # user namespace para este usuario (hallazgo real,
+            # confirmado en el spike de Fase 0, 2026-09-19: sin esto,
+            # "podman run" falla con errores de newuidmap/newgidmap).
+            _run([
+                "usermod",
+                "--add-subuids", _OCI_SUBID_RANGE,
+                "--add-subgids", _OCI_SUBID_RANGE,
+                linux_user,
+            ])
 
     for name in ("config", "state", "workspace"):
         paths[name].mkdir(parents=True, exist_ok=True)
@@ -374,10 +463,22 @@ def _disable_installer_network() -> None:
 
 
 def op_install_bundle() -> dict:
+    """
+    Específica de runtime.type: python (venv + pip) -- el equivalente
+    para runtime.type: oci es load_oci_image, no esta operación (el
+    TUI/launcher elige cuál llamar según runtime.type, ya lo sabe desde
+    validate_manifest). No es un "if oci: ... else: ..." acá adentro a
+    propósito: cada runtime tiene su propia operación con su propio
+    nombre, en vez de una sola función genérica con ramas -- mismo
+    criterio que install_bundle/load_oci_image ya eran operaciones
+    separadas desde Fase B.
+    """
     manifest = _load_manifest_for_operation()
     if not manifest.is_service:
         raise HelperError(f"{manifest.agent_id} no tiene runtime -- no es un servicio instalable")
-    _require_implemented_runtime(manifest)
+    runtime_type = _require_known_runtime_type(manifest)
+    if runtime_type != "python":
+        raise HelperError(f"install_bundle es solo para runtime.type: python -- este manifiesto declara {runtime_type!r} (usar load_oci_image)")
 
     linux_user = f"agent-{manifest.short_id}"
     paths = _agent_paths(manifest.short_id)
@@ -429,29 +530,38 @@ def op_install_bundle() -> dict:
     return {"installed": True}
 
 
+def _parse_loaded_image_ref(load_stdout: str) -> str:
+    for line in load_stdout.splitlines():
+        if line.startswith("Loaded image:"):
+            return line.removeprefix("Loaded image:").strip()
+    raise HelperError(f"no se pudo determinar qué imagen cargó podman load: {load_stdout!r}")
+
+
 def op_load_oci_image() -> dict:
     """
-    Fase B del roadmap de plataforma de agentes (ver
-    docs/AGENT_INTERFACE.md sección 4, artifact.transport) -- carga la
-    imagen ya transportada (BUNDLE_IMAGE_PATH, nunca un pull de red,
-    invariante 15) y verifica que su digest real coincida con
-    runtime.oci.image.digest ANTES de dejarla en el almacenamiento
-    local de Podman. Si no coincide, la borra de inmediato -- nunca
-    queda una imagen sin verificar en el store, ni por un instante más
-    de lo necesario para chequearla (invariante 13, cadena de
-    suministro no confiable).
+    Carga la imagen ya transportada (BUNDLE_IMAGE_PATH, nunca un pull
+    de red, invariante 15) y verifica que su digest real coincida con
+    runtime.oci.image.digest -- si no coincide, la borra de inmediato
+    (invariante 13, cadena de suministro no confiable). Específica de
+    runtime.type: oci, mismo criterio que install_bundle lo es de
+    python (ver su docstring).
 
-    Operación separada de create_agent/install_bundle/generate_unit
-    (que siguen exigiendo runtime.type == "python" vía
-    _require_implemented_runtime) a propósito: Fase B resuelve
-    transporte + integridad de forma aislada, antes de que exista el
-    Sandbox Adapter OCI completo (Fase C, no implementado todavía) --
-    mismo criterio de secuencia que el roadmap ya define. Corre como
-    root (el proceso del helper, vía pkexec) y carga a la storage de
-    Podman de root, no a la del usuario del agente todavía -- a quién
-    pertenece la imagen cargada es una decisión de Fase C (create_agent
-    ahí, cuando exista, es quien sabe qué usuario dedicado la va a
-    correr).
+    Requiere que create_agent ya haya corrido (necesita el usuario
+    dedicado y su rango subuid/subgid, Fase C) -- a diferencia de
+    install_bundle, que solo necesita el usuario existir para el
+    chown, load_oci_image necesita el subuid/subgid para el segundo
+    "podman load" de abajo.
+
+    Dos cargas, a propósito, no una:
+    1. Como root -- ÚNICAMENTE para verificar el digest antes de
+       exponerle nada al usuario del agente (Fase B, sin cambios).
+    2. Como el usuario dedicado del agente, a su propia storage
+       rootless -- Podman corre así cuando el Quadlet generado
+       (generate_unit) arranque el contenedor de verdad, así que la
+       imagen tiene que existir AHÍ, no en la storage de root. La
+       copia de root se borra al final (higiene, mismo criterio que
+       BUNDLE_STAGING en activate_agent) -- no hay razón para dejarla
+       para siempre.
     """
     manifest = _load_manifest_for_operation()
     runtime = manifest.runtime
@@ -467,22 +577,24 @@ def op_load_oci_image() -> dict:
     if not declared_digest:
         raise HelperError("runtime.oci.image.digest falta en el manifiesto")
 
-    # "podman load" imprime "Loaded image: <referencia>" por stdout --
-    # se captura esa referencia EXACTA para inspeccionar después
-    # precisamente la imagen recién cargada, en vez de adivinar por
-    # runtime.oci.image.reference (que podría no coincidir con el
-    # nombre/tag real embebido en el archivo).
+    linux_user = f"agent-{manifest.short_id}"
+    paths = _agent_paths(manifest.short_id)
+    try:
+        pwd.getpwnam(linux_user)
+    except KeyError:
+        raise HelperError(f"el usuario {linux_user!r} no existe -- ¿corrió create_agent primero?")
+
+    # 1) Carga + verifica como root -- integridad antes de exponerle
+    # nada al usuario del agente. "podman load" imprime "Loaded image:
+    # <referencia>" por stdout -- se captura esa referencia EXACTA para
+    # inspeccionar después precisamente la imagen recién cargada, en
+    # vez de adivinar por runtime.oci.image.reference (que podría no
+    # coincidir con el nombre/tag real embebido en el archivo).
     load_result = subprocess.run(
         ["podman", "load", "-i", str(BUNDLE_IMAGE_PATH)],
         check=True, capture_output=True, text=True,
     )
-    loaded_ref = None
-    for line in load_result.stdout.splitlines():
-        if line.startswith("Loaded image:"):
-            loaded_ref = line.removeprefix("Loaded image:").strip()
-            break
-    if not loaded_ref:
-        raise HelperError(f"no se pudo determinar qué imagen cargó podman load: {load_result.stdout!r}")
+    loaded_ref = _parse_loaded_image_ref(load_result.stdout)
 
     inspect_result = subprocess.run(
         ["podman", "inspect", "--format", "{{.Digest}}", loaded_ref],
@@ -498,6 +610,26 @@ def op_load_oci_image() -> dict:
             f"digest de la imagen cargada ({actual_digest}) no coincide con "
             f"runtime.oci.image.digest declarado ({declared_digest}) -- imagen rechazada y borrada"
         )
+
+    # 2) Ya verificada -- cargar la MISMA imagen a la storage rootless
+    # del usuario dedicado. No se puede leer BUNDLE_IMAGE_PATH
+    # directamente como ese usuario -- BUNDLE_STAGING es root-owned
+    # 0700 a propósito (cierra el TOCTOU del manifiesto, ver el
+    # comentario junto a esa constante), así que "podman load" como
+    # linux_user fallaba con "permission denied" al intentar leerlo
+    # (hallazgo real, 2026-09-19). Se copia primero a paths["base"]
+    # (ya paths["base"] es de linux_user desde create_agent) y se
+    # chownea explícito -- mismo patrón exacto que install_bundle ya
+    # usa para src/ (copiar afuera del staging root-only, después
+    # operar como el usuario sin privilegios).
+    agent_image_copy = paths["base"] / "image.tar"
+    shutil.copy2(BUNDLE_IMAGE_PATH, agent_image_copy)
+    _run(["chown", f"{linux_user}:{linux_user}", str(agent_image_copy)])
+    _run(["podman", "load", "-i", str(agent_image_copy)], run_as_user=linux_user, needs_userns=True)
+    agent_image_copy.unlink()
+
+    # Limpieza -- la copia de root era solo para verificar.
+    subprocess.run(["podman", "rmi", "-f", loaded_ref], check=False, capture_output=True, text=True)
 
     return {"loaded_image": loaded_ref, "digest": actual_digest}
 
@@ -565,9 +697,9 @@ def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     if "tasks_max" in sandbox:
         directives.append(f"TasksMax={sandbox['tasks_max']}")
 
-    # _require_implemented_runtime ya garantizó type == "python" antes
-    # de llegar acá (op_generate_unit lo llama) -- runtime.python existe
-    # siempre que este punto se alcanza.
+    # op_generate_unit ya garantizó runtime.type == "python" antes de
+    # llamar a esta función -- runtime.python existe siempre que este
+    # punto se alcanza.
     python_runtime = runtime.get("python", {})
     port = runtime.get("port")
     command = python_runtime.get("command", "")
@@ -617,15 +749,151 @@ WantedBy=multi-user.target
 """
 
 
+def _quadlet_unit_text(manifest: AgentManifest, linux_user: str) -> str:
+    """
+    Sandbox Adapter OCI (Fase C, ver docs/AGENT_INTERFACE.md sección
+    Sandbox): equivalente de _systemd_unit_text() para runtime.type:
+    oci, generando un Quadlet (podman-systemd.unit(5)) en vez de una
+    unidad .service a mano -- systemd lo convierte en una unidad real
+    (mismo nombre, likay-agent-<short_id>.service) al arrancar, vía el
+    generador que trae el paquete podman.
+
+    Mismos principios que _systemd_unit_text(): artefacto declarativo
+    generado desde campos ya validados, nunca un comando arbitrario
+    (invariante 7) -- nunca se usa PodmanArgs= (el escape hatch de
+    Quadlet hacia flags libres de `podman run`), todo son claves
+    estructuradas de [Container]/[Service].
+
+    [Container] User= es DISTINTO de [Service] User= -- hallazgo real
+    del spike de Fase 0 (2026-09-19): el primero fija el usuario DENTRO
+    de la imagen (por nombre, tiene que existir en su /etc/passwd), no
+    el usuario del host que corre Podman. Nunca se usa acá: no
+    controlamos qué usuarios trae una imagen de terceros. La identidad
+    de host (quién corre Podman, y por lo tanto quién es dueño del
+    contenedor y sus namespaces) se fija con [Service] User=/Group=,
+    igual que en el caso Python.
+    """
+    paths = _agent_paths(manifest.short_id)
+    sandbox = manifest.sandbox
+    runtime = manifest.runtime
+    oci_runtime = runtime.get("oci", {})
+    image_ref = oci_runtime.get("image", {}).get("reference")
+
+    container_directives = ["NoNewPrivileges=true", "DropCapability=ALL"]
+
+    fs = sandbox.get("filesystem", "none")
+    if fs == "restricted":
+        container_directives.append("ReadOnly=true")
+        # Mismos cuatro directorios que el caso Python (sección
+        # Storage), montados a una ruta fija DENTRO del contenedor --
+        # nunca derivada del manifiesto, así que ningún agente puede
+        # pedir que se le monte algo en otro lado.
+        for name in ("config", "state", "workspace", "secrets"):
+            container_directives.append(f"Volume={paths[name]}:/var/lib/likay-agent/{name}:Z")
+    elif fs != "none":
+        raise HelperError(f"sandbox.filesystem={fs!r} no es un valor legal en v2")
+
+    network = sandbox.get("network", "none")
+    if network == "none":
+        container_directives.append("Network=none")
+    elif network != "host-egress":
+        raise HelperError(f"sandbox.network={network!r} no es un valor legal en v2")
+    # host-egress: sin Network=, Podman rootless usa su red por
+    # defecto (pasta/slirp4netns) -- acceso normal a la red del host,
+    # mismo significado que en la tabla de mapeo de la sección Sandbox.
+
+    devices = sandbox.get("devices", "none")
+    if devices == "explicit":
+        # AddDevice= de Quadlet usa ':' (host[:contenedor][:permisos]),
+        # NO el '<device> <permisos>' de DeviceAllow= de systemd puro
+        # -- para runtime.type: oci, device_allow tiene que declararse
+        # ya en sintaxis AddDevice=. Documentado en
+        # docs/AGENT_INTERFACE.md.
+        for entry in sandbox.get("device_allow", []):
+            container_directives.append(f"AddDevice={entry}")
+    elif devices != "none":
+        raise HelperError(f"sandbox.devices={devices!r} no es un valor legal en v2")
+
+    port = runtime.get("port")
+    if port:
+        container_directives.append(f"PublishPort=127.0.0.1:{port}:{port}")
+
+    for k, v in runtime.get("env", {}).items():
+        container_directives.append(f"Environment={k}={v}")
+    container_directives.append("Environment=AGENT_CONFIG_DIR=/var/lib/likay-agent/config")
+    container_directives.append("Environment=AGENT_STATE_DIR=/var/lib/likay-agent/state")
+    container_directives.append("Environment=AGENT_WORKSPACE_DIR=/var/lib/likay-agent/workspace")
+    container_directives.append("Environment=AGENT_SECRETS_DIR=/var/lib/likay-agent/secrets")
+
+    # Delegate=yes -- hallazgo real (2026-09-20, probando load_oci_image
+    # en QEMU): sin esto, Podman rootless no puede crear su propio user
+    # namespace con el rango subuid/subgid completo -- newuidmap falla
+    # con "write to uid_map failed: Operation not permitted" a pesar de
+    # que /etc/subuid ya tiene el rango correcto asignado (confirmado
+    # con getsubids). La unidad generada corre bajo su propio cgroup
+    # delegado desde el arranque (a diferencia de un simple setuid), así
+    # que systemd ya le da la delegación que Podman necesita -- mismo
+    # motivo por el que _run(needs_userns=True) tiene que envolver
+    # "podman load" en systemd-run en vez de un subprocess.run(user=...)
+    # directo (ver ese comentario para el diagnóstico completo).
+    service_directives = ["Delegate=yes"]
+    if "memory_max" in sandbox:
+        service_directives.append(f"MemoryMax={sandbox['memory_max']}")
+    if "cpu_quota" in sandbox:
+        service_directives.append(f"CPUQuota={sandbox['cpu_quota']}")
+    if "tasks_max" in sandbox:
+        service_directives.append(f"TasksMax={sandbox['tasks_max']}")
+
+    container_lines = "\n".join(container_directives)
+    service_lines = "\n".join(service_directives)
+
+    return f"""[Unit]
+Description=Likay-OS agent (OCI) -- {manifest.agent_id} (generado por agent-install-helper)
+RequiresMountsFor={paths['base']}
+After=network.target likay-agent-broker.service
+
+[Container]
+Image={image_ref}
+{container_lines}
+
+[Service]
+User={linux_user}
+Group={linux_user}
+Restart=on-failure
+RestartSec=2
+{service_lines}
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+QUADLET_DIR = Path("/etc/containers/systemd")
+
+
 def op_generate_unit() -> dict:
+    """
+    Dispatch por runtime.type -- python escribe un .service a mano
+    (_systemd_unit_text) en /etc/systemd/system/; oci escribe un
+    Quadlet .container (_quadlet_unit_text) en /etc/containers/systemd/,
+    que el propio generador de Podman convierte en una unidad real al
+    arrancar. Mismo nombre resultante en ambos casos
+    (likay-agent-<short_id>.service) -- op_activate_agent no necesita
+    saber cuál de los dos generó la unidad.
+    """
     manifest = _load_manifest_for_operation()
     if not manifest.is_service:
         raise HelperError(f"{manifest.agent_id} no tiene runtime -- no es un servicio instalable")
-    _require_implemented_runtime(manifest)
+    runtime_type = _require_known_runtime_type(manifest)
 
     linux_user = f"agent-{manifest.short_id}"
-    unit_text = _systemd_unit_text(manifest, linux_user)
-    unit_path = Path(f"/etc/systemd/system/likay-agent-{manifest.short_id}.service")
+    if runtime_type == "python":
+        unit_text = _systemd_unit_text(manifest, linux_user)
+        unit_path = Path(f"/etc/systemd/system/likay-agent-{manifest.short_id}.service")
+    else:
+        unit_text = _quadlet_unit_text(manifest, linux_user)
+        QUADLET_DIR.mkdir(parents=True, exist_ok=True)
+        unit_path = QUADLET_DIR / f"likay-agent-{manifest.short_id}.container"
     unit_path.write_text(unit_text)
     unit_path.chmod(0o644)
 
@@ -634,6 +902,7 @@ def op_generate_unit() -> dict:
 
 def op_activate_agent() -> dict:
     manifest = _load_manifest_for_operation()
+    runtime_type = manifest.runtime.get("type")
     unit_name = f"likay-agent-{manifest.short_id}.service"
 
     # Un solo agente activo a la vez (ver docs/AGENT_INTERFACE.md
@@ -648,7 +917,21 @@ def op_activate_agent() -> dict:
     for line in existing.splitlines():
         other_unit = line.split()[0] if line.split() else ""
         if other_unit and other_unit != unit_name and other_unit not in INFRA_UNITS:
-            _run(["systemctl", "disable", "--now", other_unit])
+            other_short_id = other_unit.removeprefix("likay-agent-").removesuffix(".service")
+            other_quadlet_file = QUADLET_DIR / f"likay-agent-{other_short_id}.container"
+            if other_quadlet_file.is_file():
+                # Unidad generada por Quadlet (runtime.type: oci) --
+                # "systemctl disable" no aplica acá, mismo motivo que
+                # "enable" más abajo ("is transient or generated",
+                # hallazgo real 2026-09-19). Se detiene y se borra el
+                # .container FUENTE -- si no, el generador de Quadlet
+                # la vuelve a considerar "wanted" (por su propio
+                # [Install]) en el siguiente daemon-reload/boot, sin
+                # importar el stop.
+                _run(["systemctl", "stop", other_unit])
+                other_quadlet_file.unlink()
+            else:
+                _run(["systemctl", "disable", "--now", other_unit])
 
             # Hallazgo real (2026-09-17): hasta acá, el agente viejo
             # quedaba desactivado pero su usuario Linux y su grant en
@@ -660,7 +943,6 @@ def op_activate_agent() -> dict:
             # la lista de usuarios para que el caller (la TUI, la única
             # que puede hablarle al Broker directo) limpie su grant vía
             # el nuevo método unregister_policy.
-            other_short_id = other_unit.removeprefix("likay-agent-").removesuffix(".service")
             other_linux_user = f"agent-{other_short_id}"
             try:
                 pwd.getpwnam(other_linux_user)
@@ -670,7 +952,16 @@ def op_activate_agent() -> dict:
             deactivated_linux_users.append(other_linux_user)
 
     _run(["systemctl", "daemon-reload"])
-    _run(["systemctl", "enable", "--now", unit_name])
+    if runtime_type == "oci":
+        # Unidades generadas por Quadlet (systemd-quadlet-generator) no
+        # se pueden "systemctl enable" -- fallan con "Unit .../....service
+        # is transient or generated" (hallazgo real, 2026-09-19). Ya
+        # quedan "habilitadas" implícitamente por el propio [Install]
+        # del .container fuente, que el generador lee en cada
+        # daemon-reload/boot -- alcanza con arrancarla.
+        _run(["systemctl", "start", unit_name])
+    else:
+        _run(["systemctl", "enable", "--now", unit_name])
 
     # /etc/likay-os/ es root:root -- la TUI (corre como
     # likay-agent-install, sin privilegios) no puede escribir ahí.

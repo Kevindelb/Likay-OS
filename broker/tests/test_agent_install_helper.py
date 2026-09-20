@@ -209,27 +209,163 @@ class TestEnvironment:
         assert "Environment=AGENT_ENV=production" in unit
 
 
-class TestRequireImplementedRuntime:
+_DEFAULT_OCI_RUNTIME = {
+    "type": "oci",
+    "port": 8000,
+    "oci": {"image": {"reference": "ghcr.io/openclaw/openclaw", "digest": "sha256:" + "a" * 64}},
+}
+
+
+class TestQuadletUnitMapping:
     """
-    Fase A define el contrato para runtime.type == "oci", pero el
-    Sandbox Adapter real (Podman/Quadlet) es Fase C -- ver
-    docs/AGENT_INTERFACE.md. _require_implemented_runtime es la guarda
-    que hace fallar explícito create_agent/install_bundle/generate_unit
-    ante un manifiesto oci válido, en vez de un traceback confuso
-    intentando leer runtime.python inexistente.
+    _quadlet_unit_text() es el Sandbox Adapter OCI (Fase C) --
+    equivalente de _systemd_unit_text() para runtime.type: oci, mismo
+    criterio de test que esa (lógica pura, sin necesitar Podman/root
+    reales).
     """
 
-    def test_python_runtime_is_implemented(self, helper) -> None:
+    def test_image_reference_and_baseline_directives(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Image=ghcr.io/openclaw/openclaw" in unit
+        assert "NoNewPrivileges=true" in unit
+        assert "DropCapability=ALL" in unit
+        assert "User=agent-test-agent" in unit
+        # [Container] User= fijaría el usuario DENTRO de la imagen, no
+        # el del host -- ver el docstring de _quadlet_unit_text (mismo
+        # hallazgo del spike de Fase 0). Nunca debe aparecer acá.
+        container_section = unit.split("[Container]")[1].split("[Service]")[0]
+        assert "User=" not in container_section
+
+    def test_filesystem_restricted_mounts_storage_readonly(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "restricted", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "ReadOnly=true" in unit
+        for name in ("config", "state", "workspace", "secrets"):
+            assert f"Volume=/mnt/likay-agent/test-agent/{name}:/var/lib/likay-agent/{name}:Z" in unit
+
+    def test_filesystem_none_has_no_volumes(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Volume=" not in unit
+        assert "ReadOnly=true" not in unit
+
+    def test_network_none_sets_network_none(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Network=none" in unit
+
+    def test_network_host_egress_has_no_network_directive(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "host-egress", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Network=" not in unit
+
+    def test_publish_port_forces_loopback(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "host-egress", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "PublishPort=127.0.0.1:8000:8000" in unit
+
+    def test_storage_env_vars_point_at_container_paths(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "restricted", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Environment=AGENT_CONFIG_DIR=/var/lib/likay-agent/config" in unit
+        assert "Environment=AGENT_STATE_DIR=/var/lib/likay-agent/state" in unit
+        assert "Environment=AGENT_WORKSPACE_DIR=/var/lib/likay-agent/workspace" in unit
+        assert "Environment=AGENT_SECRETS_DIR=/var/lib/likay-agent/secrets" in unit
+
+    def test_manifest_env_vars_included(self, helper) -> None:
+        runtime = dict(_DEFAULT_OCI_RUNTIME)
+        runtime["env"] = {"OPENCLAW_MODE": "gateway"}
+        manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"}, runtime=runtime)
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Environment=OPENCLAW_MODE=gateway" in unit
+
+    def test_resource_limits_go_in_service_section(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none", "memory_max": "1G", "cpu_quota": "100%", "tasks_max": 256},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        service_section = unit.split("[Service]")[1].split("[Install]")[0]
+
+        assert "MemoryMax=1G" in service_section
+        assert "CPUQuota=100%" in service_section
+        assert "TasksMax=256" in service_section
+
+    def test_devices_explicit_uses_add_device(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "explicit", "device_allow": ["/dev/dri/renderD128"]},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "AddDevice=/dev/dri/renderD128" in unit
+
+    def test_filesystem_full_is_rejected(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "full", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        with pytest.raises(helper.HelperError, match="no es un valor legal"):
+            helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+
+class TestRequireKnownRuntimeType:
+    """
+    _require_known_runtime_type es defensa en profundidad (el schema
+    ya rechaza cualquier runtime.type que no sea python/oci) -- desde
+    Fase C ambos están implementados, así que ya no rechaza oci, solo
+    valores fuera de los dos conocidos.
+    """
+
+    def test_python_runtime_is_known(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
-        assert helper._require_implemented_runtime(manifest) == "python"
+        assert helper._require_known_runtime_type(manifest) == "python"
 
-    def test_oci_runtime_raises_not_implemented(self, helper) -> None:
+    def test_oci_runtime_is_known(self, helper) -> None:
         manifest = _manifest(
             {"filesystem": "none", "network": "none", "devices": "none"},
             runtime={"type": "oci", "oci": {"image": {"reference": "ghcr.io/x/y", "digest": "sha256:" + "0" * 64}}},
         )
-        with pytest.raises(helper.HelperError, match="todavía no está implementado"):
-            helper._require_implemented_runtime(manifest)
+        assert helper._require_known_runtime_type(manifest) == "oci"
+
+    def test_install_bundle_rejects_oci_runtime(self, helper, monkeypatch) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime={"type": "oci", "oci": {"image": {"reference": "ghcr.io/x/y", "digest": "sha256:" + "0" * 64}}},
+        )
+        monkeypatch.setattr(helper, "_load_manifest_for_operation", lambda: manifest)
+        with pytest.raises(helper.HelperError, match="usar load_oci_image"):
+            helper.op_install_bundle()
 
 
 class TestLoadOciImageGuards:
