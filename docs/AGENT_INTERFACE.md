@@ -459,22 +459,53 @@ secrets:
     required: false
 ```
 
-Solo **declaración** en v2 — `id` (nombre lógico) y `required`, nunca
-un valor. El flujo real (pedirle el valor al usuario en el TUI,
-inyectarlo al proceso sin que quede en texto plano en la unidad
-systemd generada) es trabajo de Fase C, cuando exista un agente real
-que lo necesite (OpenClaw) contra el cual validarlo — construir un
-Secret Manager completo (rotación, auditoría) antes de tener ese caso
-real sería exactamente el tipo de sobre-ingeniería que este documento
-evita en otros lados.
+**Implementado (2026-09-20).** `id` es tanto el nombre lógico del
+secret como, literalmente, el nombre de la variable de entorno que va
+a recibir el proceso del agente — sin campo de mapeo nuevo en el
+schema (coincide con la convención real de OpenClaw:
+`id: OPENCLAW_GATEWAY_TOKEN`).
 
-Diseño ya decidido para cuando se implemente, para que quede escrito
-antes de programarlo: el valor se escribe a un archivo dentro de
-`secrets/` (sección 5, `0700`, dueño el usuario del agente), y se
-estudia `LoadCredential=`/`EnvironmentFile=` de systemd (mantiene el
-secreto fuera del contenido visible de la unidad vía `systemctl cat`)
-antes de comprometerse a uno de los dos — nunca un valor interpolado
-directo en `Environment=` como los demás campos de `runtime.env`.
+**Flujo en el TUI**: después de `create_agent` (necesita el usuario
+dedicado ya creado), una pantalla por cada `secrets:` declarado, con
+el valor tipeado en modo enmascarado (nunca se dibuja en pantalla). El
+valor viaja de la TUI al helper privilegiado por **stdin**, nunca por
+argumento de línea de comandos — `/proc/<pid>/cmdline` es legible por
+cualquier usuario del sistema, no solo por root; `pkexec` preserva el
+stdin del proceso que lo invoca hacia el programa de destino, así que
+esto no necesita ningún archivo intermedio. La nueva operación del
+helper, `set_secret <secret_id>`, es la única (junto con las 8 ya
+existentes) — sigue expuesta con superficie mínima, nunca ejecución
+arbitraria (invariante 7).
+
+**Entrega — un mecanismo distinto por runtime, nunca uno forzado a
+los dos**: el contrato común es *"secret_id → valor disponible para el
+proceso"*; cómo se cumple aprovecha las primitivas nativas de cada
+sandbox, no una capa genérica por encima de las dos.
+
+- **`runtime.type: oci`** — `set_secret` crea un **Podman secret real**
+  en la storage rootless del propio usuario del agente (`podman secret
+  create <id> <archivo>`, corrido como ese usuario vía el mismo
+  mecanismo `needs_userns`/`Delegate=yes` que ya usa `load_oci_image`).
+  El Quadlet generado referencia el secret por nombre:
+  `Secret=<id>,type=env,target=<id>` — el valor nunca pasa por
+  `Image=`/`Environment=` del `.container`, ni queda visible vía
+  `podman inspect` o `systemctl cat`.
+- **`runtime.type: python`** — el valor se escribe directo a un
+  archivo en `secrets/` (sección 5, ya `0700`, ya dueño el usuario del
+  agente, ya expuesto como `AGENT_SECRETS_DIR` desde Fase A) — sin
+  variable de entorno automática todavía. Ningún agente Python real
+  hoy (kal-in, dummy-agent, malicious-agent) es de terceros ni necesita
+  el valor como variable de entorno cruda; ese puente (`LoadCredential=`
+  de systemd + un shim propio de Likay, nunca controlado por el
+  manifiesto) queda diferido hasta que un agente Python de terceros
+  real lo demuestre necesario — mismo criterio de "probar genericidad,
+  no adivinar de antemano" que ya se aplicó para no construir el
+  Sandbox Adapter OCI antes de tener a OpenClaw como caso real.
+
+**Almacenamiento**: en ambos casos, el valor en texto plano solo existe
+efímeramente en la TUI (mientras se tipea) y en `secrets/<id>` del
+propio agente (`0700`/`0600`, dueño el usuario dedicado) — nunca en el
+manifiesto, nunca en argv de ningún proceso, nunca logueado.
 
 ## 7. Sandbox
 

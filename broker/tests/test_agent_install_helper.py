@@ -55,13 +55,14 @@ _DEFAULT_RUNTIME = {
 }
 
 
-def _manifest(sandbox: dict, runtime: dict | None = None) -> AgentManifest:
+def _manifest(sandbox: dict, runtime: dict | None = None, secrets: list[dict] | None = None) -> AgentManifest:
     return AgentManifest(raw={
         "schema_version": 2,
         "agent": {"id": "com.example.test-agent"},
         "capabilities": [],
         "runtime": runtime or _DEFAULT_RUNTIME,
         "sandbox": sandbox,
+        "secrets": secrets or [],
     })
 
 
@@ -246,6 +247,33 @@ class TestQuadletUnitMapping:
         container_section = unit.split("[Container]")[1].split("[Service]")[0]
         assert "User=" not in container_section
 
+    def test_declared_secrets_become_secret_directives(self, helper) -> None:
+        """
+        Diseño de secrets injection (2026-09-20, ver docs/AGENT_INTERFACE.md
+        sección Secrets): el VALOR nunca pasa por acá -- op_set_secret ya
+        creó el Podman secret con este nombre por separado. Acá solo se
+        referencia por nombre (Secret=<id>,type=env,target=<id>); "id" es
+        literalmente el nombre de la variable de entorno a inyectar
+        DENTRO del contenedor, sin campo de mapeo nuevo en el schema.
+        """
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+            secrets=[{"id": "OPENCLAW_GATEWAY_TOKEN", "required": True}],
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Secret=OPENCLAW_GATEWAY_TOKEN,type=env,target=OPENCLAW_GATEWAY_TOKEN" in unit
+
+    def test_no_secrets_declared_means_no_secret_directive(self, helper) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+
+        assert "Secret=" not in unit
+
     def test_filesystem_restricted_mounts_storage_readonly(self, helper) -> None:
         manifest = _manifest(
             {"filesystem": "restricted", "network": "none", "devices": "none"},
@@ -394,3 +422,56 @@ class TestLoadOciImageGuards:
         )
         with pytest.raises(helper.HelperError, match="no usa load_oci_image"):
             helper.op_load_oci_image()
+
+
+class TestSetSecretGuards:
+    """
+    op_set_secret (diseño de secrets injection, 2026-09-20, ver
+    docs/AGENT_INTERFACE.md sección Secrets) -- el camino principal
+    necesita un usuario real del sistema (para el chown) y, en runtime
+    oci, un Podman real -- fuera de alcance de un test unitario, mismo
+    criterio que create_agent/load_oci_image. Acá solo se testean los
+    guards que corren ANTES de tocar disco: el id tiene que estar
+    declarado en el manifiesto, y create_agent tiene que haber corrido.
+    """
+
+    def test_rejects_argv_without_secret_id(self, helper, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["agent-install-helper", "set_secret"])
+        monkeypatch.setattr(
+            helper, "_load_manifest_for_operation",
+            lambda: _manifest(
+                {"filesystem": "none", "network": "none", "devices": "none"},
+                secrets=[{"id": "FOO", "required": True}],
+            ),
+        )
+        with pytest.raises(helper.HelperError, match="necesita el id del secret"):
+            helper.op_set_secret()
+
+    def test_rejects_undeclared_secret_id(self, helper, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["agent-install-helper", "set_secret", "NOT_DECLARED"])
+        monkeypatch.setattr(
+            helper, "_load_manifest_for_operation",
+            lambda: _manifest(
+                {"filesystem": "none", "network": "none", "devices": "none"},
+                secrets=[{"id": "FOO", "required": True}],
+            ),
+        )
+        with pytest.raises(helper.HelperError, match="no está declarado"):
+            helper.op_set_secret()
+
+    def test_requires_create_agent_first(self, helper, monkeypatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["agent-install-helper", "set_secret", "FOO"])
+        monkeypatch.setattr(
+            helper, "_load_manifest_for_operation",
+            lambda: _manifest(
+                {"filesystem": "none", "network": "none", "devices": "none"},
+                secrets=[{"id": "FOO", "required": True}],
+            ),
+        )
+
+        def _no_such_user(_name):
+            raise KeyError("no such user")
+
+        monkeypatch.setattr(helper.pwd, "getpwnam", _no_such_user)
+        with pytest.raises(helper.HelperError, match="create_agent primero"):
+            helper.op_set_secret()

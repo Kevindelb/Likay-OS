@@ -56,15 +56,27 @@ class InstallAborted(Exception):
     """El usuario canceló, o un paso privilegiado falló -- se corta la instalación, nunca se sigue a medias."""
 
 
-def run_helper(operation: str) -> dict:
+def run_helper(operation: str, *, arg: str | None = None, stdin_data: str | None = None) -> dict:
     """
     Único punto de llamada al helper privilegiado -- SIEMPRE vía
     pkexec, SIEMPRE con el nombre exacto de una de las operaciones
-    fijas (ver agent-install-helper, OPERATIONS) como único argumento.
-    Nunca se arma un comando distinto ni se interpola nada acá.
+    fijas (ver agent-install-helper, OPERATIONS). Nunca se arma un
+    comando distinto ni se interpola nada acá.
+
+    arg -- el único caso hoy es set_secret (el id del secret, nunca el
+    valor). stdin_data -- el valor del secret en sí, cuando aplica.
+    Hallazgo real (2026-09-20, diseñando secrets injection): el valor
+    NUNCA viaja por argv -- /proc/<pid>/cmdline es legible por
+    CUALQUIER usuario del sistema (no solo root), a diferencia de
+    /proc/<pid>/environ (dueño del proceso o root). pkexec preserva el
+    stdin del proceso que lo invoca hacia el programa de destino, así
+    que esto llega al helper sin pasar por ningún archivo intermedio.
     """
+    cmd = ["pkexec", HELPER, operation]
+    if arg is not None:
+        cmd.append(arg)
     proc = subprocess.run(
-        ["pkexec", HELPER, operation],
+        cmd, input=stdin_data,
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -140,6 +152,65 @@ def approve_capabilities(stdscr, agent_id: str, capabilities: list[str]) -> list
     return approved
 
 
+def _prompt_masked(stdscr, y: int, x: int) -> str:
+    """
+    Input de una línea con eco enmascarado ("*" por carácter) -- el
+    valor real nunca se dibuja en pantalla. Enter confirma, Backspace
+    borra, Esc deja el campo vacío (tratado como "no lo cargues" por
+    collect_secrets para un secret opcional).
+    """
+    curses.curs_set(1)
+    value = ""
+    while True:
+        stdscr.move(y, x)
+        stdscr.clrtoeol()
+        stdscr.addstr(y, x, "*" * len(value))
+        stdscr.refresh()
+        ch = stdscr.getch()
+        if ch in (10, 13):  # Enter
+            break
+        if ch == 27:  # Esc
+            value = ""
+            break
+        if ch in (curses.KEY_BACKSPACE, 127, 8):
+            value = value[:-1]
+        elif 32 <= ch <= 126:
+            value += chr(ch)
+    curses.curs_set(0)
+    return value
+
+
+def collect_secrets(stdscr, agent_id: str, secrets_declared: list[dict]) -> None:
+    """
+    Un secret por pantalla, valor enmascarado -- ver
+    docs/AGENT_INTERFACE.md sección Secrets. Llama a set_secret por
+    cada uno que el usuario cargue; uno opcional (required: false) que
+    se deja vacío simplemente no se llama (el agente arranca sin él,
+    mismo criterio que declarar la capability y no usarla). El valor
+    viaja de esta pantalla a run_helper por argumento de función
+    directo -- nunca queda en una variable de entorno ni en un archivo
+    temporal de la TUI.
+    """
+    for entry in secrets_declared:
+        secret_id = entry.get("id", "")
+        required = bool(entry.get("required"))
+        stdscr.clear()
+        stdscr.addstr(1, 2, f"Secret requerido por {agent_id}", curses.A_BOLD)
+        stdscr.addstr(3, 2, f"id:        {secret_id}")
+        stdscr.addstr(4, 2, f"requerido: {'sí' if required else 'no'}")
+        stdscr.addstr(6, 2, "Valor (Enter confirma, Esc deja vacío):")
+        value = _prompt_masked(stdscr, 8, 4)
+        if not value:
+            if required:
+                draw_message(
+                    stdscr, "Secret requerido faltante",
+                    [f"'{secret_id}' es obligatorio y quedó vacío.",
+                     "El agente probablemente no va a arrancar sin él."],
+                )
+            continue
+        run_helper("set_secret", arg=secret_id, stdin_data=value)
+
+
 def check_existing_agent(stdscr) -> None:
     """
     Un solo agente activo a la vez (ver docs/AGENT_INTERFACE.md, fuera
@@ -148,8 +219,12 @@ def check_existing_agent(stdscr) -> None:
     activar el nuevo), esta pantalla es solo para avisarle al usuario
     de antemano, no una acción en sí.
     """
+    # --plain -- mismo hallazgo que ya se aplicó en op_activate_agent()
+    # del helper (2026-09-20): sin esto, systemctl antepone un glifo "●"
+    # para cualquier unidad en estado failed, y line.split()[0] agarra
+    # ese glifo en vez del nombre real de la unidad.
     result = subprocess.run(
-        ["systemctl", "list-units", "--type=service", "--no-legend", "likay-agent-*.service"],
+        ["systemctl", "list-units", "--type=service", "--plain", "--no-legend", "likay-agent-*.service"],
         capture_output=True, text=True,
     )
     existing = [
@@ -216,6 +291,7 @@ def main(stdscr) -> int:
         short_id = manifest["short_id"]
         capabilities = manifest["capabilities"]
         runtime = manifest.get("runtime") or {}
+        secrets_declared = manifest.get("secrets") or []
 
         if not confirm(
             stdscr, f"Manifiesto validado: {agent_id}",
@@ -240,6 +316,14 @@ def main(stdscr) -> int:
         draw_message(stdscr, "Paso 2/6", ["Creando el usuario Linux dedicado del agente..."], footer="")
         created = run_helper("create_agent")
         linux_user = created["linux_user"]
+
+        # Después de create_agent, no antes -- set_secret necesita el
+        # usuario dedicado ya creado (para el chown, y para el Podman
+        # secret rootless si runtime.type: oci). Antes de Paso 3/6 (que
+        # ya puede tardar minutos con load_oci_image) para no hacer
+        # esperar al usuario innecesariamente antes de pedirle algo.
+        if secrets_declared:
+            collect_secrets(stdscr, agent_id, secrets_declared)
 
         # Hallazgo real (2026-09-20, probando en hardware real): este
         # paso llamaba a install_bundle sin importar runtime.type --

@@ -98,6 +98,7 @@ OPERATIONS = (
     "activate_agent",
     "reboot",
     "load_oci_image",
+    "set_secret",
 )
 
 # Unidades de infraestructura que matchean el glob likay-agent-*.service
@@ -339,6 +340,7 @@ def op_validate_manifest() -> dict:
         "is_service": manifest.is_service,
         "runtime": manifest.runtime,
         "sandbox": manifest.sandbox,
+        "secrets": manifest.secrets,
     }
 
 
@@ -427,6 +429,68 @@ def op_create_agent() -> dict:
     _run(["chown", "-R", f"{linux_user}:{linux_user}", str(paths["base"])])
 
     return {"linux_user": linux_user}
+
+
+def op_set_secret() -> dict:
+    """
+    Escribe UN secret declarado en el manifiesto al storage privado del
+    agente (paths["secrets"]/<id>, ya 0700 desde create_agent) -- el
+    valor viaja por STDIN, nunca por argv (visible en /proc/<pid>/cmdline
+    para CUALQUIER usuario del sistema, no solo root) ni por variable de
+    entorno del propio helper. Requiere create_agent ya corrido (hace
+    falta el usuario dedicado para el chown).
+
+    Para runtime.type: oci, ADEMÁS crea un Podman secret real en la
+    storage rootless del propio usuario del agente ("podman secret
+    create", corrido como ese usuario vía needs_userns=True -- mismo
+    mecanismo que load_oci_image). _quadlet_unit_text() referencia ese
+    secret por nombre (Secret=<id>,type=env,target=<id>) para
+    inyectarlo como variable de entorno DENTRO del contenedor sin que
+    el valor pase nunca por Image=/Environment= del Quadlet ni quede
+    visible vía "podman inspect" -- ver docs/AGENT_INTERFACE.md,
+    sección Secrets.
+
+    runtime.type: python NO necesita ningún paso extra acá -- el
+    archivo ya queda en paths["secrets"], que _systemd_unit_text() ya
+    expone como AGENT_SECRETS_DIR (storage taxonomy existente desde
+    Fase A). Ningún agente Python real hoy necesita el valor como
+    variable de entorno cruda (son todos de primera parte); ese puente
+    queda diferido hasta que un agente Python de terceros real lo
+    demuestre necesario -- mismo criterio que ya se aplicó para no
+    adivinar de antemano en OCI.
+    """
+    if len(sys.argv) != 3:
+        raise HelperError("set_secret necesita el id del secret como argumento")
+    secret_id = sys.argv[2]
+
+    manifest = _load_manifest_for_operation()
+    declared_ids = {entry.get("id") for entry in manifest.secrets}
+    if secret_id not in declared_ids:
+        raise HelperError(f"{secret_id!r} no está declarado en secrets: del manifiesto")
+
+    linux_user = f"agent-{manifest.short_id}"
+    try:
+        pwd.getpwnam(linux_user)
+    except KeyError:
+        raise HelperError(f"el usuario {linux_user!r} no existe -- ¿corrió create_agent primero?")
+
+    value = sys.stdin.read()
+    if not value:
+        raise HelperError(f"valor vacío para el secret {secret_id!r}")
+
+    paths = _agent_paths(manifest.short_id)
+    secret_path = paths["secrets"] / secret_id
+    secret_path.write_text(value)
+    secret_path.chmod(0o600)
+    _run(["chown", f"{linux_user}:{linux_user}", str(secret_path)])
+
+    if manifest.runtime.get("type") == "oci":
+        _run(
+            ["podman", "secret", "create", secret_id, str(secret_path)],
+            run_as_user=linux_user, needs_userns=True,
+        )
+
+    return {"secret_id": secret_id}
 
 
 def _enable_installer_network(timeout: float = 25.0) -> None:
@@ -856,6 +920,19 @@ def _quadlet_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     container_directives.append("Environment=AGENT_WORKSPACE_DIR=/var/lib/likay-agent/workspace")
     container_directives.append("Environment=AGENT_SECRETS_DIR=/var/lib/likay-agent/secrets")
 
+    # Secret=<id>,type=env,target=<id> -- op_set_secret() ya creó el
+    # Podman secret con este mismo nombre en la storage rootless del
+    # usuario del agente (ver su docstring). El valor nunca pasa por
+    # Image=/Environment= de este archivo ni por argv del helper -- solo
+    # el NOMBRE del secret aparece acá, nunca el valor. "id" es
+    # literalmente el nombre de la variable de entorno a inyectar
+    # DENTRO del contenedor (misma convención que ya usa el ejemplo de
+    # OpenClaw en docs/AGENT_INTERFACE.md: id: OPENCLAW_GATEWAY_TOKEN)
+    # -- sin campo nuevo de mapeo en el schema.
+    for entry in manifest.secrets:
+        secret_id = entry.get("id")
+        container_directives.append(f"Secret={secret_id},type=env,target={secret_id}")
+
     # Delegate=yes -- hallazgo real (2026-09-20, probando load_oci_image
     # en QEMU): sin esto, Podman rootless no puede crear su propio user
     # namespace con el rango subuid/subgid completo -- newuidmap falla
@@ -1057,11 +1134,12 @@ _DISPATCH = {
     "activate_agent": op_activate_agent,
     "reboot": op_reboot,
     "load_oci_image": op_load_oci_image,
+    "set_secret": op_set_secret,
 }
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[1] not in OPERATIONS:
+    if len(argv) < 2 or argv[1] not in OPERATIONS:
         print(
             f"uso: {argv[0]} <{'|'.join(OPERATIONS)}>",
             file=sys.stderr,
@@ -1069,6 +1147,19 @@ def main(argv: list[str]) -> int:
         return 2
 
     operation = argv[1]
+    # set_secret es la ÚNICA operación con un argumento extra (el id del
+    # secret -- nunca el valor, ese viaja por stdin dentro de
+    # op_set_secret). Todas las demás siguen exigiendo exactamente 2
+    # argumentos, sin excepción -- invariante 7, ninguna operación
+    # acepta parámetros libres.
+    expected_argc = 3 if operation == "set_secret" else 2
+    if len(argv) != expected_argc:
+        print(
+            f"uso: {argv[0]} set_secret <secret_id>" if operation == "set_secret"
+            else f"uso: {argv[0]} <{'|'.join(OPERATIONS)}>",
+            file=sys.stderr,
+        )
+        return 2
     try:
         result = _DISPATCH[operation]()
     except HelperError as exc:
