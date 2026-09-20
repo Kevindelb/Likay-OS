@@ -726,15 +726,63 @@ real, no solo un fixture escrito a medida:
   específico de Quadlet/OCI — cualquier `likay-agent-*` que haya
   fallado antes de ser reemplazado dispara el mismo bug.
 
-**Bloqueo final, esperado y documentado desde antes de probar (no un
-bug de la plataforma)**: sin `OPENAI_API_KEY`/configuración, el propio
-binario de OpenClaw sale con `"Missing config. Run \`openclaw setup\`
-or set gateway.mode=local (or pass --allow-unconfigured)."` — su
-propio gate de onboarding, no algo que el Sandbox Adapter deba resolver.
-Confirma exactamente el vacío ya señalado en la sección 6 (secrets solo
-se declaran en v2, sin mecanismo de inyección real todavía) — una
-prueba de humo completa (assert 200 en `/healthz`) queda pendiente de
-que ese mecanismo exista.
+**Prueba de humo completa, lograda (2026-09-20): `curl /healthz` real
+devolvió `{"ok":true,"status":"live"}`, HTTP 200, con los 13 plugins de
+OpenClaw cargados y el heartbeat corriendo.** El primer intento salió
+con `"Missing config. Run \`openclaw setup\` or set gateway.mode=local
+(or pass --allow-unconfigured)."` — el propio gate de onboarding de
+OpenClaw, no un bug del Sandbox Adapter. Se corrigió UN error de
+investigación propio en el camino (ver más abajo) y se llegó a 200
+combinando, a mano (fuera del pipeline declarativo — ver los dos
+vacíos reales que quedan, al final), lo siguiente:
+
+- **`OPENCLAW_STATE_DIR`** apuntado al volumen persistente montado
+  (`runtime.env`, ya soportado sin cambios).
+- **`HOME`** apuntado al MISMO volumen — OpenClaw usa `$HOME/.cache`
+  para un directorio temporal de respaldo, separado de
+  `OPENCLAW_STATE_DIR`; sin esto fallaba igual con
+  `EACCES`/`ENOENT` al intentar crearlo.
+- **El montaje necesita el flag `:U` de Podman, no solo `:Z`** — sin
+  él, el volumen aparece dentro del contenedor con el dueño que resulta
+  de la identidad de host (UID 0 del contenedor), nunca el usuario
+  no-root que la imagen declara correr (`node`, UID 1000 interno) — ese
+  usuario no podía escribir en su propio volumen. **Corregido en
+  `_quadlet_unit_text()` (ya no es específico de esta prueba) — genérico
+  para cualquier imagen de terceros bien comportada que corra como
+  no-root**, no una rareza de OpenClaw.
+- **`OPENCLAW_GATEWAY_TOKEN`** — un secret real (Gateway se niega a
+  escuchar en `0.0.0.0` sin autenticación configurada, una guarda de
+  seguridad correcta de su parte).
+
+**Error de investigación propio, corregido en público**: la primera
+versión de este smoke test asumió (sin verificarlo contra el código
+fuente) que no existía forma de relocalizar el estado de OpenClaw fuera
+de su `docker-compose.yml`, y se filó un feature request
+([openclaw/openclaw#153623](https://github.com/openclaw/openclaw/issues/153623))
+pidiéndolo. Es falso — `OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH`/
+`OPENCLAW_HOME` ya existen, están implementados
+(`src/config/paths.ts`) y documentados para otros objetivos de
+despliegue no-compose (`docs/install/fly.md`, `docs/install/nix.md`) —
+simplemente no en la página específica que se había revisado
+(`docs/install/docker.md`). El issue se corrigió con un comentario
+público y se cerró. Lección operativa: verificar contra el código
+fuente real (`gh search code`), no solo contra una página de docs vía
+resumen automático, antes de publicar un reporte a un proyecto externo.
+
+**Dos vacíos reales, todavía sin resolver, por los que esta prueba se
+hizo a mano y no a través del pipeline declarativo real**:
+
+1. **Sin mecanismo de inyección de secrets** (`OPENCLAW_GATEWAY_TOKEN`)
+   — ya documentado en la sección 6, `secrets:` sigue siendo solo
+   declaración en v2.
+2. **Sin forma de declarar argumentos extra del comando del
+   contenedor** (`--allow-unconfigured`) — el schema no tiene ningún
+   campo para esto hoy; `ExecStart`/`Cmd` del Quadlet generado siempre
+   usa el `Cmd` por defecto de la imagen. Sumar esto ensancharía lo que
+   un manifiesto puede hacer arrancar (sigue siendo datos
+   estructurados, nunca shell libre, pero es una decisión de diseño
+   real, no solo una corrección) — evaluada y diferida, no
+   implementada todavía.
 
 ```yaml
 schema_version: 2
@@ -753,6 +801,9 @@ runtime:
   type: oci
   port: 18789
   health_check_path: /healthz
+  env:
+    OPENCLAW_STATE_DIR: /var/lib/likay-agent/state
+    HOME: /var/lib/likay-agent/state
   oci:
     image:
       reference: ghcr.io/openclaw/openclaw
@@ -768,6 +819,8 @@ storage:
   secrets: private
 
 secrets:
+  - id: OPENCLAW_GATEWAY_TOKEN
+    required: true
   - id: OPENAI_API_KEY
     required: false
 

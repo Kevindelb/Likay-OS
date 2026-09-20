@@ -802,8 +802,25 @@ def _quadlet_unit_text(manifest: AgentManifest, linux_user: str) -> str:
         # Storage), montados a una ruta fija DENTRO del contenedor --
         # nunca derivada del manifiesto, así que ningún agente puede
         # pedir que se le monte algo en otro lado.
+        #
+        # :U -- hallazgo real (2026-09-20, probando OpenClaw real en
+        # QEMU): sin esto, el volumen aparece DENTRO del contenedor con
+        # el dueño que resulta de la identidad del host (container UID
+        # 0, vía la primera línea del mapeo rootless), nunca el usuario
+        # no-root que la imagen declara correr (p.ej. "node", UID 1000
+        # interno, el caso de OpenClaw) -- ese usuario no-root se
+        # encontraba con el volumen dueño de "root" (desde SU vista) y
+        # no podía escribir nada ahí, aunque el volumen fuera
+        # legítimamente de su propio agente. `:U` le pide a Podman que
+        # ajuste el dueño real del volumen para que coincida con el
+        # UID/GID que el contenedor va a usar -- necesario para
+        # cualquier imagen de terceros que corra como no-root (un
+        # patrón común y recomendado en imágenes bien comportadas, no
+        # una rareza de OpenClaw). Coexiste con `Z` (reetiquetado
+        # SELinux) separado por coma, sintaxis estándar de Podman para
+        # combinar opciones de montaje.
         for name in ("config", "state", "workspace", "secrets"):
-            container_directives.append(f"Volume={paths[name]}:/var/lib/likay-agent/{name}:Z")
+            container_directives.append(f"Volume={paths[name]}:/var/lib/likay-agent/{name}:Z,U")
     elif fs != "none":
         raise HelperError(f"sandbox.filesystem={fs!r} no es un valor legal en v2")
 

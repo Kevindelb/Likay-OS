@@ -254,8 +254,12 @@ class TestQuadletUnitMapping:
         unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
 
         assert "ReadOnly=true" in unit
+        # :Z,U -- hallazgo real (2026-09-20, OpenClaw real en QEMU): sin
+        # :U el volumen queda dueño de root desde la vista del
+        # contenedor, y un proceso no-root (el "node" de OpenClaw, o
+        # cualquier imagen bien comportada) no puede escribir ahí.
         for name in ("config", "state", "workspace", "secrets"):
-            assert f"Volume=/mnt/likay-agent/test-agent/{name}:/var/lib/likay-agent/{name}:Z" in unit
+            assert f"Volume=/mnt/likay-agent/test-agent/{name}:/var/lib/likay-agent/{name}:Z,U" in unit
 
     def test_filesystem_none_has_no_volumes(self, helper) -> None:
         manifest = _manifest(
