@@ -777,7 +777,21 @@ def _quadlet_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     sandbox = manifest.sandbox
     runtime = manifest.runtime
     oci_runtime = runtime.get("oci", {})
-    image_ref = oci_runtime.get("image", {}).get("reference")
+    image = oci_runtime.get("image", {})
+    # Hallazgo real (2026-09-20, probando OpenClaw real en QEMU): usar
+    # solo `image.reference` (sin digest) en Image= deja que Quadlet le
+    # agregue ":latest" por su cuenta si esa referencia exacta no está
+    # en la storage local -- y "cargado por load_oci_image" no implica
+    # "cargado bajo el tag :latest" (el fixture de prueba coincidía por
+    # casualidad; la imagen real de OpenClaw se probó bajo el tag
+    # :slim, no :latest). Sin el digest, Quadlet intentó un pull de red
+    # real contra ghcr.io -- justo lo que artifact.transport:
+    # local-oci-archive existe para evitar (invariante 15). Fijar
+    # SIEMPRE la referencia por digest (`ref@sha256:...`) resuelve a la
+    # imagen ya cargada sin importar bajo qué tag venía en el archivo,
+    # y es además lo correcto por la invariante 13 (nunca confiar en un
+    # tag mutable en el momento de arrancar, solo en el digest fijado).
+    image_ref = f"{image.get('reference')}@{image.get('digest')}"
 
     container_directives = ["NoNewPrivileges=true", "DropCapability=ALL"]
 
@@ -911,7 +925,18 @@ def op_activate_agent() -> dict:
     # antes de activar el nuevo.
     deactivated_linux_users: list[str] = []
     existing = subprocess.run(
-        ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "likay-agent-*.service"],
+        # --plain -- hallazgo real (2026-09-20, reactivando sobre una
+        # unidad OpenClaw previamente fallida en QEMU): sin esto,
+        # systemctl antepone un glifo "●" como primera columna para
+        # cualquier unidad listada que esté en estado "failed" -- el
+        # `line.split()[0]` de abajo agarraba ESE glifo en vez del
+        # nombre real de la unidad, y el intento de
+        # "systemctl disable" sobre "●" fallaba con "Invalid unit name".
+        # No es específico de OpenClaw ni de Quadlet -- cualquier unidad
+        # `likay-agent-*` que haya fallado antes de ser reemplazada
+        # dispara el mismo bug. --plain suprime el glifo, salida
+        # tabular pura.
+        ["systemctl", "list-units", "--type=service", "--all", "--plain", "--no-legend", "likay-agent-*.service"],
         check=True, capture_output=True, text=True,
     ).stdout
     for line in existing.splitlines():

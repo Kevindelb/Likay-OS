@@ -231,7 +231,12 @@ class TestQuadletUnitMapping:
         )
         unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
 
-        assert "Image=ghcr.io/openclaw/openclaw" in unit
+        # Hallazgo real (2026-09-20, OpenClaw real en QEMU): Image= debe
+        # llevar el digest, nunca una referencia bare -- si no, Quadlet
+        # le agrega ":latest" por su cuenta y puede intentar un pull de
+        # red si el tag realmente cargado (p.ej. ":slim") no coincide,
+        # violando artifact.transport: local-oci-archive (invariante 15).
+        assert "Image=ghcr.io/openclaw/openclaw@sha256:" + "a" * 64 in unit
         assert "NoNewPrivileges=true" in unit
         assert "DropCapability=ALL" in unit
         assert "User=agent-test-agent" in unit

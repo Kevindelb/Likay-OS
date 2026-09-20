@@ -690,14 +690,51 @@ audit:
   event_prefix: agent_kal-in
 ```
 
-### 12.2 OpenClaw (runtime OCI, mecanismo probado; imagen real pendiente)
+### 12.2 OpenClaw (runtime OCI, probado contra la imagen real publicada)
 
-El Sandbox Adapter OCI ya está implementado y verificado de punta a
-punta (sección 3.2), pero contra un fixture propio, deliberadamente NO
-construido para este caso — la prueba de portabilidad más fuerte. Este
-manifiesto de OpenClaw, el caso que motivó todo el rediseño, sigue
-siendo ilustrativo hasta correr la misma verificación contra su imagen
-real publicada (pendiente, fuera del alcance ya cerrado de Fase C).
+**Probado en QEMU (2026-09-20) contra `ghcr.io/openclaw/openclaw:slim`
+real** — no un fixture propio, la imagen oficial publicada por el
+proyecto, sin tocar. `mount_bundle` → `validate_manifest` →
+`create_agent` → `load_oci_image` → `generate_unit` → `activate_agent`
+corrieron de punta a punta contra ella; el contenedor real (~2.8GB
+descomprimido) arrancó bajo el sandbox completo (rootless, digest
+fijado, `NoNewPrivileges`, `DropCapability=ALL`, raíz de solo lectura)
+y ejecutó el binario real de OpenClaw. Esto encontró y corrigió DOS
+bugs reales en el propio Sandbox Adapter, ninguno específico de
+OpenClaw — exactamente el valor de probar contra un agente de terceros
+real, no solo un fixture escrito a medida:
+
+- **`Image=` sin digest dejaba que Quadlet intentara un `pull` de
+  red.** `_quadlet_unit_text()` construía `Image=` a partir de
+  `runtime.oci.image.reference` solo, sin el digest — si esa
+  referencia exacta (sin tag) no estaba en la storage local, Quadlet le
+  agregaba `:latest` por su cuenta e intentaba bajarla de `ghcr.io`. El
+  fixture de Fase C nunca lo expuso porque, por coincidencia, se había
+  cargado bajo el tag `:latest` también; la imagen real de OpenClaw se
+  probó bajo `:slim`, un tag distinto, y el intento de pull real violó
+  directamente `artifact.transport: local-oci-archive` (invariante
+  15). Corregido fijando SIEMPRE `Image={reference}@{digest}` — coincide
+  además con la invariante 13 (nunca confiar en un tag mutable en el
+  momento de arrancar).
+- **`systemctl list-units` sin `--plain` rompía la desactivación de un
+  agente anterior en estado `failed`.** `op_activate_agent()` parsea la
+  salida de `list-units` para encontrar y desactivar cualquier otro
+  `likay-agent-*.service` activo — sin `--plain`, systemd antepone un
+  glifo "●" como primera columna para cualquier unidad en estado
+  `failed`, y `line.split()[0]` agarraba ese glifo en vez del nombre
+  real de la unidad, rompiendo con "Invalid unit name". No es
+  específico de Quadlet/OCI — cualquier `likay-agent-*` que haya
+  fallado antes de ser reemplazado dispara el mismo bug.
+
+**Bloqueo final, esperado y documentado desde antes de probar (no un
+bug de la plataforma)**: sin `OPENAI_API_KEY`/configuración, el propio
+binario de OpenClaw sale con `"Missing config. Run \`openclaw setup\`
+or set gateway.mode=local (or pass --allow-unconfigured)."` — su
+propio gate de onboarding, no algo que el Sandbox Adapter deba resolver.
+Confirma exactamente el vacío ya señalado en la sección 6 (secrets solo
+se declaran en v2, sin mecanismo de inyección real todavía) — una
+prueba de humo completa (assert 200 en `/healthz`) queda pendiente de
+que ese mecanismo exista.
 
 ```yaml
 schema_version: 2
@@ -705,6 +742,7 @@ schema_version: 2
 agent:
   id: com.openclaw.gateway
   name: "OpenClaw"
+  version: "slim"
   vendor: "OpenClaw project"
 
 capabilities:
@@ -713,12 +751,12 @@ capabilities:
 
 runtime:
   type: oci
-  port: 8000
-  health_check_path: /health
+  port: 18789
+  health_check_path: /healthz
   oci:
     image:
       reference: ghcr.io/openclaw/openclaw
-      digest: "sha256:<pin real al implementar Fase C>"
+      digest: "sha256:988320c1dc7b146b1e4feca5aa825f668f7cca385cb00aeb5682720bab69b63c"
 
 artifact:
   transport: local-oci-archive
@@ -731,14 +769,14 @@ storage:
 
 secrets:
   - id: OPENAI_API_KEY
-    required: true
+    required: false
 
 sandbox:
   filesystem: restricted
   network: host-egress
   devices: none
   memory_max: "1G"
-  cpu_quota: "100%"
+  cpu_quota: "150%"
   tasks_max: 256
 ```
 
