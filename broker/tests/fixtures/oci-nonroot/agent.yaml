@@ -1,0 +1,53 @@
+# Corre como usuario no-root DENTRO de la imagen (USER nonroot, UID
+# 1000 interno) a propósito -- regresión del hallazgo real de
+# 2026-09-20 (probando OpenClaw real, ghcr.io/openclaw/openclaw):
+# _quadlet_unit_text() montaba los volúmenes de storage con solo ":Z",
+# sin ":U" -- sin ese flag, el volumen aparece DENTRO del contenedor
+# con el dueño que resulta de la identidad de host mapeada (UID 0 del
+# contenedor, vía la primera línea del mapeo rootless), nunca el
+# usuario no-root real que la imagen declara correr. Un proceso no-root
+# bien comportado (como este fixture, o como OpenClaw) se encuentra con
+# su propio volumen legítimo, pero sin permiso de escritura -- EACCES.
+#
+# Este fixture ataca ese escenario directo: intenta escribir un
+# archivo en su volumen de state (declarado, legítimo, no un intento de
+# escape como malicious-agent) al responder cualquier GET, y reporta el
+# resultado real (OK/DENIED + el UID visto desde adentro) en el cuerpo
+# de la respuesta -- sin necesitar leer logs ni journalctl para
+# verificar la regresión.
+schema_version: 2
+
+agent:
+  id: com.example.oci-nonroot
+  name: "oci-nonroot"
+  version: "0.1.0"
+  vendor: "Likay-OS project (fixture de regresión -- montaje :U)"
+
+capabilities:
+  - filesystem.data_dir
+
+runtime:
+  type: oci
+  port: 8000
+  health_check_path: /
+  oci:
+    image:
+      reference: docker.io/library/likay-oci-nonroot-fixture
+      digest: "sha256:<pin real al construir la imagen -- ver README>"
+
+artifact:
+  transport: local-oci-archive
+
+storage:
+  state: persistent
+
+sandbox:
+  filesystem: restricted
+  network: host-egress
+  devices: none
+  memory_max: "128M"
+  cpu_quota: "50%"
+  tasks_max: 32
+
+audit:
+  event_prefix: agent_oci_nonroot
