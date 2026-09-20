@@ -241,9 +241,24 @@ def main(stdscr) -> int:
         created = run_helper("create_agent")
         linux_user = created["linux_user"]
 
-        draw_message(stdscr, "Paso 3/6", ["Copiando el código e instalando dependencias...",
-                                            "(esto puede tardar unos minutos)"], footer="")
-        run_helper("install_bundle")
+        # Hallazgo real (2026-09-20, probando en hardware real): este
+        # paso llamaba a install_bundle sin importar runtime.type --
+        # install_bundle es SOLO para python (rechaza oci explícito, ver
+        # su docstring en el helper) y load_oci_image nunca se llamaba
+        # acá, así que instalar cualquier agente OCI real por el TUI
+        # (no por el helper a mano, como se probó todo Fase C en QEMU)
+        # fallaba siempre en este paso. Nunca se había ejercitado el
+        # flujo completo del TUI real contra un manifiesto oci hasta
+        # esta prueba en hardware.
+        runtime_type = runtime.get("type")
+        if runtime_type == "oci":
+            draw_message(stdscr, "Paso 3/6", ["Cargando la imagen OCI ya transportada...",
+                                                "(esto puede tardar unos minutos)"], footer="")
+            run_helper("load_oci_image")
+        else:
+            draw_message(stdscr, "Paso 3/6", ["Copiando el código e instalando dependencias...",
+                                                "(esto puede tardar unos minutos)"], footer="")
+            run_helper("install_bundle")
 
         draw_message(stdscr, "Paso 4/6", ["Generando la unidad systemd sandboxeada..."], footer="")
         run_helper("generate_unit")
