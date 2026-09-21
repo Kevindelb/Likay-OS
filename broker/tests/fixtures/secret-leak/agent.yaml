@@ -1,0 +1,51 @@
+# Verificación adversarial de secrets injection (2026-09-21, ver
+# docs/AGENT_INTERFACE.md sección Secrets) -- declara UN secret y, al
+# responder cualquier GET, confirma haberlo recibido correctamente sin
+# devolver el valor crudo (un hash alcanza). El objetivo de esta prueba
+# no es el código del fixture en sí -- es confirmar, DESDE AFUERA
+# (host), que el valor nunca aparece en:
+#   - ps (host, cualquier proceso)
+#   - journalctl (host, cualquier unidad)
+#   - podman inspect del contenedor
+#   - el archivo .container generado (Quadlet)
+#   - el storage de otro usuario del sistema (otro agente)
+schema_version: 2
+
+agent:
+  id: com.example.secret-leak
+  name: "secret-leak"
+  version: "0.1.0"
+  vendor: "Likay-OS project (fixture de verificación adversarial -- secrets)"
+
+capabilities:
+  - filesystem.data_dir
+
+runtime:
+  type: oci
+  port: 8000
+  health_check_path: /
+  oci:
+    image:
+      reference: docker.io/library/likay-secret-leak-fixture
+      digest: "sha256:<pin real al construir la imagen>"
+
+artifact:
+  transport: local-oci-archive
+
+storage:
+  state: persistent
+
+secrets:
+  - id: LIKAY_TEST_SECRET
+    required: true
+
+sandbox:
+  filesystem: restricted
+  network: host-egress
+  devices: none
+  memory_max: "128M"
+  cpu_quota: "50%"
+  tasks_max: 32
+
+audit:
+  event_prefix: agent_secret_leak
