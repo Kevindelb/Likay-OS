@@ -50,5 +50,22 @@ RestartSec=2
 StandardOutput=journal+console
 StandardError=journal+console
 
+# Endurecimiento base (auditoría de seguridad 2026-09-26): kal-in-backend
+# corría sin ninguna de las protecciones que sí tiene
+# likay-agent-broker.service. Se aplica a propósito un subconjunto
+# conservador -- NoNewPrivileges, PrivateTmp y las protecciones de kernel
+# no pueden romper a un agente Python que solo habla con Ollama por
+# loopback y con su propio storage. NO se pone ProtectSystem=strict ni
+# ProtectControlGroups=yes ni SystemCallFilter= acá: kal-in tiene la
+# capacidad docker.sandbox y podría necesitar escribir fuera de su
+# storage o usar namespaces/cgroups, y eso no se puede verificar sin
+# hardware real (mismo criterio conservador que la revisión pide).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+
 [Install]
 WantedBy=multi-user.target

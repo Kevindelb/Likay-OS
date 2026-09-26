@@ -37,4 +37,11 @@ DefaultDependencies=no
 What=/dev/disk/by-label/likay-agent
 Where=/mnt/likay-agent
 Type=ext4
-Options=defaults,nofail
+# nosuid,nodev (auditoría de seguridad 2026-09-26): esta partición
+# alberga el src/venv/storage de agentes de terceros, que escriben ahí
+# con su propio usuario. No hay ninguna razón legítima para que se
+# ejecute un binario setuid desde acá ni para que existan nodos de
+# dispositivo reales -- negarlo a nivel de mount es hardening barato y
+# coherente con cómo ya se monta el USB del bundle
+# (ro,nosuid,nodev,noexec, ver agent-install-helper).
+Options=defaults,nofail,nosuid,nodev
