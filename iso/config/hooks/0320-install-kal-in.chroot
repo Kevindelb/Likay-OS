@@ -1,11 +1,12 @@
 #!/bin/bash
 # Instala kal-in desde /opt/kal-in (código copiado ahí por auto/build,
 # host, antes de `lb build` — ver ese script), usando SOLO
-# requirements-core.txt + requirements-dev.txt, sin
-# requirements-multimodal.txt (diffusers/torch pesan varios GB y esta
-# etapa no necesita generación de imagen/audio/video — ver
-# docs/ROADMAP.md, Etapa 1). Mismo patrón exacto que
-# 0300-install-kal.chroot, para el agente en vez del kernel.
+# requirements-core.txt, sin requirements-multimodal.txt (diffusers/torch
+# pesan varios GB y esta etapa no necesita generación de imagen/audio/video
+# — ver docs/ROADMAP.md, Etapa 1) ni requirements-dev.txt (pytest/ruff no
+# hacen falta en runtime -- hallazgo B-M3, auditoría 2026-09-26). Mismo
+# patrón exacto que 0300-install-kal.chroot, para el agente en vez del
+# kernel.
 #
 # Fase 1 del issue #2 ("montar cualquier agente"): kal-in vendorizado y
 # conectado a mano, todavía no hay una interfaz genérica — eso queda

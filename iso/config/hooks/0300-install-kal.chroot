@@ -1,9 +1,13 @@
 #!/bin/bash
 # Instala kal desde /opt/kal (código copiado ahí por auto/build, host,
-# antes de `lb build` — ver ese script) usando SOLO requirements-core.txt
-# + requirements-dev.txt, sin requirements-multimodal.txt (diffusers/torch
-# pesan varios GB y esta etapa no necesita generación de imagen/audio/video
-# — ver docs/ROADMAP.md, Etapa 1).
+# antes de `lb build` — ver ese script) usando SOLO requirements-core.txt,
+# sin requirements-multimodal.txt (diffusers/torch pesan varios GB y esta
+# etapa no necesita generación de imagen/audio/video — ver
+# docs/ROADMAP.md, Etapa 1) NI requirements-dev.txt (pytest/ruff -- el
+# propio requirements-dev.txt del submódulo dice "nunca hace falta en
+# una instalación de uso normal"; hornearlos en el sistema instalado era
+# superficie/tamaño innecesarios sin ningún beneficio en runtime --
+# hallazgo B-M3, auditoría de seguridad 2026-09-26).
 set -euo pipefail
 
 # Idempotente: este hook puede correr más de una vez sobre el mismo

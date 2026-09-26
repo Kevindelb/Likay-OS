@@ -5,8 +5,9 @@
 #   1. ANTES: siembra config/includes.chroot con lo que `lb build` no
 #      puede generar solo — el código de kal (vendor/kal, un submódulo,
 #      no algo que viva en el chroot de por sí) y los blobs de Ollama que
-#      ya estén en cache de una corrida anterior (model-cache/, vía
-#      hardlinks — instantáneo, sin red).
+#      ya estén en cache de una corrida anterior (model-cache/, vía copia
+#      real -- ver B-M2 en la auditoría 2026-09-26 sobre por qué ya no
+#      son hardlinks -- pero igual sin red).
 #   2. DESPUÉS: sincroniza de vuelta a model-cache/ cualquier blob que el
 #      hook 0200-pull-ollama-model.hook.chroot haya tenido que bajar de
 #      verdad (cache frío o modelo nuevo) — así la
@@ -71,15 +72,16 @@ rsync -a --delete \
     --exclude='tests' \
     --exclude='vscode-extension' \
     "${REPO_ROOT}/vendor/kal/" "${INCLUDES_KAL_DIR}/"
-# Hallazgo de la auditoría de seguridad (2026-09-26, B-A2): pip-locks/
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-A2/B-M3): pip-locks/
 # fija versión+hash de cada dependencia de terceros que 0300-install-kal.chroot
 # instala -- generado con "uv pip compile vendor/kal/requirements-core.txt
-# vendor/kal/requirements-dev.txt --generate-hashes". requirements-core.txt/
-# requirements-dev.txt son del submódulo (lo que kal PIDE); este lock es
-# responsabilidad del build de Likay-OS (lo que Likay-OS realmente
-# instala) -- se regenera a mano cuando kal cambia sus requirements, no
-# automáticamente en cada build (mismo criterio que un lockfile común:
-# reproducible hasta que alguien decide actualizarlo).
+# --generate-hashes" (SOLO core, nunca requirements-dev.txt -- pytest/ruff
+# no hacen falta en el sistema instalado). requirements-core.txt es del
+# submódulo (lo que kal PIDE); este lock es responsabilidad del build de
+# Likay-OS (lo que Likay-OS realmente instala) -- se regenera a mano
+# cuando kal cambia sus requirements, no automáticamente en cada build
+# (mismo criterio que un lockfile común: reproducible hasta que alguien
+# decide actualizarlo).
 cp "${REPO_ROOT}/iso/pip-locks/kal.lock.txt" "${INCLUDES_KAL_DIR}/kal.lock.txt"
 
 # vendor/kal-in: prototipo de validación del pipeline de boot (issue
@@ -155,15 +157,28 @@ cp config/likay/model.conf config/includes.chroot/etc/likay-os/model.conf
 
 mkdir -p "${MODEL_CACHE_DIR}"
 if [ -n "$(ls -A "${MODEL_CACHE_DIR}" 2>/dev/null)" ]; then
-    echo "==> Sembrando modelos desde model-cache/ (hardlinks, sin red)"
-    # -rf + recrear en vez de sembrar sobre lo que ya hubiera: cp -al no
-    # es idempotente contra un destino que ya tiene estos mismos
-    # archivos (aunque sea el mismo hardlink de una corrida anterior) —
-    # "File exists" con set -e activo aborta TODO el script acá mismo,
-    # antes de llegar siquiera a `lb build` (encontrado en vivo).
+    echo "==> Sembrando modelos desde model-cache/ (copia real, sin red)"
+    # Hallazgo de la auditoría de seguridad (2026-09-26, B-M2), CONFIRMADO
+    # EN VIVO en este mismo checkout (iso/model-cache/ apareció con dueño
+    # "dnsmasq:systemd-oom" -- ni remotamente un usuario real de este
+    # sistema): "cp -al" (hardlinks) hacía que los archivos de acá y los
+    # de dentro del chroot fueran el MISMO inodo. 0100-install-ollama.chroot
+    # después hace "chown -R ollama:ollama" DENTRO del chroot -- pero el
+    # dueño de un inodo es una propiedad del inodo mismo, no del path por
+    # el que se lo mira, así que ese chown re-ownereaba también los
+    # archivos de ESTE repositorio en el host (UID del "ollama" del
+    # chroot, que en el host resuelve a cualquier otra cuenta que tenga
+    # esa UID -- acá, "dnsmasq"). "cp -a" es una copia real (sin
+    # compartir inodo) -- mismo tiempo de CPU al ser un simple memcpy
+    # entre cachés de página, pero ya no hay ningún inodo compartido que
+    # un chown de un lado pueda mutar del otro.
+    #
+    # -rf + recrear en vez de sembrar sobre lo que ya hubiera: mismo
+    # motivo que antes con cp -al -- "File exists" con set -e activo
+    # podía abortar TODO el script acá mismo (encontrado en vivo).
     rm -rf "${INCLUDES_MODELS_DIR}"
     mkdir -p "${INCLUDES_MODELS_DIR}"
-    cp -al "${MODEL_CACHE_DIR}/." "${INCLUDES_MODELS_DIR}/"
+    cp -a "${MODEL_CACHE_DIR}/." "${INCLUDES_MODELS_DIR}/"
 else
     mkdir -p "${INCLUDES_MODELS_DIR}"
     echo "==> model-cache/ vacío todavía — el hook de Ollama va a bajar el modelo de verdad esta vez"
@@ -172,7 +187,9 @@ fi
 sync_models_back() {
     if [ -d "${CHROOT_MODELS_DIR}" ]; then
         echo "==> Sincronizando modelos del chroot de vuelta a model-cache/ (para la próxima build)"
-        cp -al "${CHROOT_MODELS_DIR}/." "${MODEL_CACHE_DIR}/" 2>/dev/null \
+        # cp -a, no cp -al -- mismo motivo que arriba (B-M2): nunca
+        # compartir inodo entre chroot/ y este repositorio del host.
+        cp -a "${CHROOT_MODELS_DIR}/." "${MODEL_CACHE_DIR}/" 2>/dev/null \
             || rsync -a "${CHROOT_MODELS_DIR}/" "${MODEL_CACHE_DIR}/"
     fi
 }
