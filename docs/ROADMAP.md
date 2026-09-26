@@ -60,6 +60,52 @@ La visión de un kernel propio e independiente queda como objetivo a
 **largo plazo**, a perseguir con la colaboración de una comunidad — no
 como punto de partida.
 
+## Decisión de alcance: el techo de aislamiento es namespaces/cgroups, no microVM (2026-09-26)
+
+Cada agente corre con su propio usuario Linux, su propio namespace de
+red/mount/PID, cgroup con límites de memoria/CPU/tareas,
+`DropCapability=ALL`, `ProtectSystem=strict` (ver
+[`docs/AGENT_INTERFACE.md`](AGENT_INTERFACE.md) sección Sandbox). Es
+real — lo prueba `malicious-agent` (7 intentos de escape, los 7
+DENIED, en hardware real). Pero **todos los agentes y el propio Broker
+comparten un solo kernel**: cada namespace, cada cgroup, cada
+`NoNewPrivileges` es una regla que ese MISMO kernel aplica, no una
+frontera de hardware. Un bug del kernel en el subsistema de
+namespaces/cgroups rompe el aislamiento de todos los agentes a la vez
+(la categoría de CVEs de escape de runc/Docker, dirty pipe, dirty cow,
+etc.) — algo que ni namespaces ni seccomp pueden evitar por diseño,
+porque la frontera vive DENTRO del mismo kernel que se está intentando
+contener.
+
+**Por qué esto es una decisión de alcance, no una laguna sin ver.**
+Frente a un modelo tipo E2B/Modal/Firecracker (una microVM por
+sandbox, kernel invitado propio, la frontera real es el hipervisor)
+Likay-OS se queda un escalón abajo en aislamiento puro. Es defendible
+para lo que Likay-OS es hoy — **un sistema que una sola persona
+instala en su propia máquina, un agente activo a la vez (decisión de
+alcance de V1)** — no una plataforma multi-tenant donde un escape
+significa que el código de un cliente cruza a los datos de otro. El
+peor caso de un escape de namespace acá es "el agente consigue root en
+la misma máquina cuyo dueño ya tiene acceso físico" — grave, pero un
+perfil de riesgo distinto al que justifica pagar el costo de una VM
+por sandbox. Lo que namespaces/cgroups NO cubren, específicamente, es
+el 0-day de kernel — una categoría real pero más rara que las que ya
+se probaron y contienen hoy (lectura de archivos fuera del área
+concedida, escalada de privilegios, dispositivos crudos, puertos
+privilegiados).
+
+**Camino conocido para subir el techo, si hace falta más adelante:**
+`gVisor` (`runsc`) es un runtime OCI más — compatible con Podman/Quadlet
+sin rediseñar la arquitectura del Sandbox Adapter (Fase C), sube el
+aislamiento del runtime OCI reinterpretando las syscalls en userspace
+en vez de dejarlas llegar al kernel real. Firecracker/microVM real
+(kernel invitado propio por agente, vía algo como Kata Containers) es
+un salto mucho más grande — reemplaza el storage taxonomy actual
+(bind mounts → virtio-fs/virtio-blk) y la identidad del Broker
+(`SO_PEERCRED` sobre un socket Unix no cruza una frontera de VM, haría
+falta `virtio-vsock` con un mecanismo de identidad propio) — sería una
+etapa de roadmap en sí misma, no una extensión de Etapa 2/3.
+
 ---
 
 ## Etapa 1 — ISO live-boot
