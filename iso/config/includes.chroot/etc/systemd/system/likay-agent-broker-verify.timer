@@ -1,0 +1,18 @@
+[Unit]
+Description=Likay-OS -- verifica a diario la cadena de auditoría del Agent Broker
+# Hallazgo de la auditoría de seguridad (2026-09-26): la cadena
+# hash-linked del log del Broker nunca se verificaba en el sistema
+# instalado (verify_chain/diagnose_chain solo tenían callers en tests).
+# Este timer corre likay-agent-broker-verify.service, que devuelve
+# exit != 0 si la cadena está rota -- visible en `systemctl --failed`
+# y en journalctl, en vez de quedar en silencio.
+After=likay-agent-broker.service
+ConditionKernelCommandLine=!likay.privileged
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=likay-agent-broker-verify.service
+
+[Install]
+WantedBy=timers.target

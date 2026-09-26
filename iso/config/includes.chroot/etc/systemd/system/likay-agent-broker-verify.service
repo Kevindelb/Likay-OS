@@ -1,0 +1,31 @@
+[Unit]
+Description=Likay-OS -- verificación de integridad de la cadena de auditoría del Agent Broker
+# Hallazgo de la auditoría de seguridad (2026-09-26): AuditLog.diagnose_chain()
+# existía desde el diseño original pero ningún componente del sistema
+# instalado la llamaba -- la promesa de "manipulación evidente" de
+# docs/AGENT_INTERFACE.md sección 10 quedaba dormida. Esta unidad es el
+# caller que faltaba; el timer (likay-agent-broker-verify.timer) la corre
+# una vez por día y `systemctl status` / journalctl muestran si falló.
+After=likay-agent-broker.service
+ConditionKernelCommandLine=!likay.privileged
+
+[Service]
+Type=oneshot
+User=likay-broker
+Group=likay-broker
+WorkingDirectory=/opt/likay-broker
+ExecStart=/opt/likay-broker/.venv/bin/python -m likay_broker verify-audit
+
+# Mismo endurecimiento base que likay-agent-broker.service, pero de solo
+# lectura: esta unidad no necesita escribir nada (ni política ni log).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadOnlyPaths=/var/log/likay-agent-broker
