@@ -23,16 +23,83 @@ set -euo pipefail
 # valores acá -- nunca aflojar la verificación para "que ande".
 OLLAMA_VERSION="0.34.4"
 OLLAMA_INSTALL_SH_SHA256="25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f"
+# Hallazgo de la re-auditoría de seguridad (2026-09-26, R-6): el pin de
+# arriba solo cubre el SCRIPT -- el binario real de Ollama lo descarga
+# el propio install.sh con "curl | zstd -d | tar -x", en un solo pipe
+# streameado, SIN verificar nada. Este valor es el sha256 real de
+# "ollama-linux-amd64.tar.zst" para OLLAMA_VERSION (arriba),
+# cross-verificado contra DOS fuentes independientes: lo que sirve
+# ollama.com/download y el sha256sum.txt que el propio proyecto publica
+# en su release de GitHub (coinciden exactos). Mismo criterio que
+# install.sh: subir de versión implica re-verificar y re-pinear los DOS
+# valores a mano, nunca aflojar la verificación.
+OLLAMA_TARBALL_SHA256="c238986e61d40c0cc5f4a9b9e40b9eea104350b77efa34741fc134e105cb9533"
+
+# Definida ANTES del trap (que puede dispararse por un "exit 1" bien
+# temprano, en cualquiera de las dos verificaciones de sha256 de abajo)
+# -- si el trap se dispara antes de que esta función exista todavía,
+# bash tira "command not found" al salir, tapando el error real. Vacía
+# acá no hace nada (nada que restaurar todavía); se llena más abajo,
+# justo antes de invocar install.sh.
+_ollama_gpu_tools_chmod_x_removed=""
+_restore_gpu_detection_tools() {
+    for tool_path in ${_ollama_gpu_tools_chmod_x_removed}; do
+        chmod +x "${tool_path}" 2>/dev/null || true
+    done
+}
 
 ollama_install_script="$(mktemp)"
-trap 'rm -f "${ollama_install_script}"' EXIT
-curl -fsSL https://ollama.com/install.sh -o "${ollama_install_script}"
+ollama_tarball="$(mktemp)"
+trap 'rm -f "${ollama_install_script}" "${ollama_tarball}"; _restore_gpu_detection_tools' EXIT
 
+curl -fsSL https://ollama.com/install.sh -o "${ollama_install_script}"
 actual_sha256="$(sha256sum "${ollama_install_script}" | cut -d' ' -f1)"
 if [ "${actual_sha256}" != "${OLLAMA_INSTALL_SH_SHA256}" ]; then
     echo "install.sh de Ollama no coincide con el sha256 pineado -- esperado ${OLLAMA_INSTALL_SH_SHA256}, obtuve ${actual_sha256}. Abortando (posible compromiso del endpoint, o una nueva versión legítima del script que hay que revisar y re-pinear a mano)." >&2
     exit 1
 fi
+
+# Verificación INDEPENDIENTE del tarball real ANTES de dejar que
+# install.sh baje el suyo -- si esto no coincide, abortamos acá, antes
+# de ejecutar nada. No liga criptográficamente los bytes que baje
+# install.sh unos segundos después a los que verificamos acá (seguiría
+# habiendo una descarga sin hash dentro del script en sí), pero es el
+# mismo modelo de confianza ya aceptado para install.sh: verificar
+# fresco contra la fuente real y confiar en la proximidad temporal.
+curl -fsSL --location \
+    "https://ollama.com/download/ollama-linux-amd64.tar.zst?version=${OLLAMA_VERSION}" \
+    -o "${ollama_tarball}"
+actual_tarball_sha256="$(sha256sum "${ollama_tarball}" | cut -d' ' -f1)"
+if [ "${actual_tarball_sha256}" != "${OLLAMA_TARBALL_SHA256}" ]; then
+    echo "ollama-linux-amd64.tar.zst (versión ${OLLAMA_VERSION}) no coincide con el sha256 pineado -- esperado ${OLLAMA_TARBALL_SHA256}, obtuve ${actual_tarball_sha256}. Abortando." >&2
+    exit 1
+fi
+
+# Hallazgo de la re-auditoría de seguridad (2026-09-26, R-6): install.sh,
+# si detecta una GPU NVIDIA/AMD real (vía lspci/lshw) SIN drivers ya
+# instalados, agrega el repo apt de NVIDIA y corre
+# "apt-get install cuda-drivers" como root -- esto NO debería pasar
+# NUNCA acá: un hook de build de ISO no tiene ningún motivo legítimo
+# para tocar el stack de drivers de GPU de la máquina donde se corre
+# `lb build` (es un bug de alcance, más allá de lo estrictamente de
+# seguridad -- construir una imagen no debería mutar el host).
+#
+# install.sh decide esto con "available() { command -v "$1" >/dev/null; }"
+# -- que solo mira si el binario EXISTE y es ejecutable, nunca lo
+# ejecuta para decidir. Un stub "siempre falla" NO alcanza (se probó a
+# mano: command -v lo sigue encontrando, así que "available" da true
+# igual) -- hace falta que lspci/lshw sean genuinamente NO
+# encontrables. Bajarles el bit +x a los binarios reales (si existen en
+# este chroot) logra exactamente eso -- command -v los salta -- y se
+# restauran siempre al salir (_restore_gpu_detection_tools, definida
+# arriba, ya enganchada al trap).
+for tool_name in lspci lshw; do
+    tool_path="$(command -v "${tool_name}" 2>/dev/null || true)"
+    if [ -n "${tool_path}" ]; then
+        chmod -x "${tool_path}"
+        _ollama_gpu_tools_chmod_x_removed="${_ollama_gpu_tools_chmod_x_removed} ${tool_path}"
+    fi
+done
 
 OLLAMA_VERSION="${OLLAMA_VERSION}" sh "${ollama_install_script}"
 

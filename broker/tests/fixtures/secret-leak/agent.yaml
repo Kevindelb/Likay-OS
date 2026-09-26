@@ -19,6 +19,17 @@ agent:
 
 capabilities:
   - filesystem.data_dir
+  # network.egress: sandbox.network: host-egress (abajo) es lo único
+  # que habilita el namespace de red del contenedor -- sin esto, ni
+  # siquiera PublishPort= (el acceso ENTRANTE que este fixture necesita
+  # para que el host lo pueda curl-ear) funciona (Network=none en
+  # Quadlet desactiva la red entera, no solo saliente). Agregado tras
+  # la re-auditoría de seguridad 2026-09-26 (R-3): la validación de
+  # coherencia sandbox/capabilities (I-3) rechazaba este fixture porque
+  # declaraba host-egress sin la capacidad correspondiente -- una
+  # regresión real sobre un fixture ya validado en QEMU, no un cambio
+  # de comportamiento del fixture en sí.
+  - network.egress
 
 runtime:
   type: oci

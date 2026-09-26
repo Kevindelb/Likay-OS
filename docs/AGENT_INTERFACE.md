@@ -154,11 +154,19 @@ que comparten ese último componente (o cuya forma "puntos→guiones"
 coincide, p.ej. `com.likay.kal-in` vs. `com.likay-kal.in`) derivarían el
 MISMO usuario/unidad/storage/grant del Broker, permitiendo que un
 bundle malicioso suplantara a un agente ya instalado. `id-corto` es en
-cambio `<último-componente-truncado>-<sha256(id completo)[:10]>` —
+cambio `<último-componente-truncado>-<sha256(id completo)[:16]>` —
 legible para debug, pero la unicidad real la da el hash sobre el `id`
 completo (`likay_broker.manifest.AgentManifest.short_id`). Reinstalar
 el MISMO `agent.id` sigue derivando el mismo `id-corto`
 (idempotente).
+
+**Re-auditoría (2026-09-26, R-4): el hash subió de 10 a 16 chars hex
+(40 → 64 bits).** 40 bits era una segunda preimagen alcanzable en
+minutos con una sola GPU de gama alta (el atacante elige el `agent_id`
+completo libremente) — 64 bits está fuera de alcance práctico. El
+prefijo legible bajó de 12 a 9 chars para que `agent-<prefijo>-<hash>`
+siga entrando en el límite clásico de 32 caracteres de un usuario
+Linux.
 
 ```yaml
 agent:
@@ -592,13 +600,12 @@ interno que la sintaxis real de `DeviceAllow=` necesita
 (`<device> <permisos>`, p.ej. `/dev/sda5 rwm`).
 
 **Coherencia entre `sandbox:` y `capabilities:` — hallazgo I-3, auditoría
-de seguridad 2026-09-26, ya cerrado.** Hasta esa fecha, la aprobación de
-capacidades que el usuario ve en la TUI no gobernaba el sandbox real: un
-manifiesto con `capabilities: []` podía igual traer
-`sandbox.network: host-egress` (acceso a la red del host) o
-`sandbox.devices: explicit` con `device_allow` apuntando a hardware
-concreto, sin que nada de eso se mostrara ni se aprobara. Dos cambios lo
-cierran:
+de seguridad 2026-09-26.** Hasta esa fecha, la aprobación de capacidades
+que el usuario ve en la TUI no gobernaba el sandbox real: un manifiesto
+con `capabilities: []` podía igual traer `sandbox.network: host-egress`
+(acceso a la red del host) o `sandbox.devices: explicit` con
+`device_allow` apuntando a hardware concreto, sin que nada de eso se
+mostrara ni se aprobara. Dos cambios lo atacaron en un primer momento:
 
 1. `parse_manifest_text` (`likay_broker/manifest.py`,
    `_validate_sandbox_capability_coherence`) rechaza el manifiesto si
@@ -609,10 +616,53 @@ cierran:
    `audio.speaker`/`camera`) — corre en el mismo punto por el que pasan
    TANTO la TUI (para mostrar) COMO el helper (para instalar), así que
    ningún manifiesto incoherente llega a generar una unidad real.
-2. La TUI (`agent-install-launcher`) muestra ahora una pantalla propia
-   con el `sandbox:` real (filesystem/network/devices/device_allow/
-   límites de recursos) ANTES de la aprobación de capacidades, no solo
+2. La TUI (`agent-install-launcher`) muestra una pantalla propia con el
+   `sandbox:` real (filesystem/network/devices/device_allow/límites de
+   recursos) ANTES de la aprobación de capacidades, no solo
    `id`/puerto/cantidad de capacidades.
+
+**Esos dos cambios NO cerraban el hallazgo — hallazgo R-1, re-auditoría
+de seguridad 2026-09-26, este sí cierra I-3 de verdad.** Los dos puntos
+de arriba garantizan que el manifiesto sea coherente consigo mismo y
+que el usuario VEA el sandbox antes de aprobar/denegar capacidades —
+pero `op_generate_unit()` no recibía la lista aprobada en absoluto:
+armaba la unidad SIEMPRE a partir de `manifest.sandbox` crudo, sin
+importar qué hubiera aprobado o denegado el usuario. Denegar
+`network.egress` en la TUI no le sacaba `sandbox.network: host-egress`
+a la unidad generada — la denegación era cosmética, el agente seguía
+recibiendo exactamente lo que el manifiesto pedía. Reproducido con un
+PoC real antes de este fix: manifiesto con `sandbox.network:
+host-egress` + `device_allow: ["/dev/sda rwm"]`, todo denegado en la
+TUI (`approved = []`), unidad generada con red del host y
+`DeviceAllow=/dev/sda rwm` de todos modos.
+
+Cerrado conectando de verdad la aprobación con la generación:
+
+- `likay_broker.manifest.effective_sandbox(sandbox, approved_capabilities)`
+  deriva el sandbox EFECTIVO -- rebaja `network: host-egress` a `none`
+  si `network.egress` no fue aprobada, y `devices: explicit` a `none`
+  (sin `device_allow`) si ninguna capacidad de dispositivo fue
+  aprobada. Nunca AMPLÍA lo declarado (invariante 3): aprobar una
+  capacidad nunca otorga más de lo que el manifiesto ya pedía.
+- La TUI manda la lista aprobada por **stdin** (JSON, mismo transporte
+  que `set_secret` usa para el valor del secret -- nunca argv) al
+  invocar `generate_unit`.
+- `op_generate_unit()` lee esa lista, la intersecta con
+  `manifest.capabilities` (defensa en profundidad: una capacidad
+  "aprobada" que ni siquiera está declarada no tiene efecto), calcula
+  `effective_sandbox()`, y RECIÉN AHÍ llama a
+  `_systemd_unit_text()`/`_quadlet_unit_text()` -- que ahora reciben el
+  sandbox como parámetro explícito, nunca leen `manifest.sandbox` por
+  su cuenta.
+
+Límite conocido, deliberado, mismo que ya tenía la validación de
+coherencia: `device_allow` es una lista plana sin capacidad por
+entrada, así que aprobar CUALQUIER capacidad de dispositivo habilita la
+lista COMPLETA, no entrada por entrada. `sandbox.filesystem` tampoco se
+gatea por `filesystem.data_dir` -- las cuatro carpetas de storage
+propio (`config`/`state`/`workspace`/`secrets`) se consideran
+infraestructura mínima que todo agente necesita para funcionar, no una
+capacidad opcional denegable (a diferencia de red/dispositivos).
 
 ## 8. Lifecycle operativo
 

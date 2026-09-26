@@ -14,7 +14,10 @@ if ! id likay-broker >/dev/null 2>&1; then
 fi
 
 python3 -m venv /opt/likay-broker/.venv
-/opt/likay-broker/.venv/bin/pip install --no-cache-dir --upgrade pip
+# Sin "pip install --upgrade pip" (hallazgo R-5, re-auditoría
+# 2026-09-26) -- mismo motivo que 0300/0320: el pip que trae
+# python3-venv ya alcanza, y reemplazarlo por uno de PyPI sin hash
+# anulaba en la práctica el --require-hashes de abajo.
 # Hallazgo de la auditoría de seguridad (2026-09-26, B-A2): antes de
 # este fix, "pip install -e ." resolvía pyyaml/jsonschema (y sus
 # transitivas) sin hashes ni versiones fijas -- una release maliciosa

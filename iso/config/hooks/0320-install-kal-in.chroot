@@ -29,7 +29,10 @@ if ! id kal-in >/dev/null 2>&1; then
 fi
 
 python3 -m venv /opt/kal-in/.venv
-/opt/kal-in/.venv/bin/pip install --no-cache-dir --upgrade pip
+# Sin "pip install --upgrade pip" (hallazgo R-5, re-auditoría 2026-09-26)
+# -- mismo motivo que 0300-install-kal.chroot: el pip que trae
+# python3-venv ya alcanza, y reemplazarlo por uno de PyPI sin hash
+# anulaba en la práctica el --require-hashes de abajo.
 # Mismo motivo que 0300-install-kal.chroot (auditoría 2026-09-26, B-A2):
 # kal-in.lock.txt fija versión+hash de cada dependencia de terceros.
 /opt/kal-in/.venv/bin/pip install --no-cache-dir --require-hashes -r /opt/kal-in/kal-in.lock.txt

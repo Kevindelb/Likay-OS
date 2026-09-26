@@ -1,6 +1,7 @@
 """Tests de likay_broker.manifest -- sin QEMU, corren en cualquier lado."""
 from __future__ import annotations
 
+import re
 import textwrap
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 
 from likay_broker.manifest import (
     ManifestError,
+    effective_sandbox,
     parse_manifest_file,
     parse_manifest_text,
     validate_requirements_path,
@@ -105,7 +107,7 @@ VALID_OPENCLAW_OCI_MANIFEST = textwrap.dedent(
 def test_parses_valid_kal_in_manifest() -> None:
     manifest = parse_manifest_text(VALID_KAL_IN_MANIFEST)
     assert manifest.agent_id == "com.likay.kal-in"
-    assert manifest.short_id == "kal-in-bfa07e6eba"
+    assert manifest.short_id == "kal-in-bfa07e6ebaaa9c85"
     assert "llm.local" in manifest.capabilities
     assert manifest.is_service
     assert manifest.runtime["port"] == 8000
@@ -444,3 +446,112 @@ class TestSandboxCapabilityCoherence:
             '  devices: explicit\n  device_allow: ["/dev/dri/renderD128 rw"]\n',
         )
         parse_manifest_text(coherent)  # gpu.compute ya está declarada -- no levanta
+
+
+_FIXTURES_ROOT = Path(__file__).resolve().parent / "fixtures"
+_PLACEHOLDER_DIGEST_RE = re.compile(r"sha256:<[^>]*>")
+
+
+@pytest.mark.parametrize(
+    "fixture_path",
+    sorted(_FIXTURES_ROOT.glob("*/agent.yaml")),
+    ids=lambda p: p.parent.name,
+)
+def test_every_fixture_manifest_still_parses(fixture_path: Path) -> None:
+    """
+    Regresión explícita del hallazgo R-3 (re-auditoría de seguridad
+    2026-09-26): la validación de coherencia sandbox/capabilities (I-3,
+    manifest.py) rechazó en silencio dos fixtures del propio repo
+    (oci-nonroot, secret-leak) que ya estaban validados end-to-end en
+    QEMU -- ninguna prueba automática los parseaba, así que la suite
+    daba verde con la regresión adentro. Este test parsea TODOS los
+    `agent.yaml` bajo fixtures/ para que una regla de validación nueva
+    nunca vuelva a invalidar uno en silencio.
+
+    El digest placeholder ("sha256:<pin real al construir la
+    imagen>") es intencional en los fixtures OCI -- se completa recién
+    al construir la imagen real (ver sus propios comentarios) -- así
+    que se sustituye acá por uno con forma válida antes de parsear;
+    este test verifica la COHERENCIA del manifiesto, no el digest real.
+    """
+    text = fixture_path.read_text(encoding="utf-8")
+    text = _PLACEHOLDER_DIGEST_RE.sub("sha256:" + "a" * 64, text)
+    parse_manifest_text(text)  # no debe levantar ManifestError
+
+
+class TestEffectiveSandbox:
+    """
+    Hallazgo R-1 (re-auditoría de seguridad 2026-09-26, sobre I-3): la
+    aprobación/denegación real del usuario en la TUI nunca gobernaba el
+    sandbox generado -- op_generate_unit() ni siquiera recibía la lista
+    aprobada, así que denegar una capacidad era cosmético. Estos tests
+    reproducen el PoC exacto de la re-auditoría: un manifiesto que pide
+    host-egress + device_allow con TODO denegado no debe conservar
+    ninguno de los dos en el sandbox efectivo.
+    """
+
+    def test_denying_network_egress_downgrades_to_none(self) -> None:
+        sandbox = {"network": "host-egress", "devices": "none"}
+        effective = effective_sandbox(sandbox, approved_capabilities=set())
+        assert effective["network"] == "none"
+
+    def test_approving_network_egress_keeps_host_egress(self) -> None:
+        sandbox = {"network": "host-egress", "devices": "none"}
+        effective = effective_sandbox(sandbox, approved_capabilities={"network.egress"})
+        assert effective["network"] == "host-egress"
+
+    def test_denying_all_device_capabilities_drops_device_allow(self) -> None:
+        sandbox = {
+            "network": "none",
+            "devices": "explicit",
+            "device_allow": ["/dev/sda rwm", "/dev/video0 rw"],
+        }
+        effective = effective_sandbox(sandbox, approved_capabilities={"network.egress"})
+        assert effective["devices"] == "none"
+        assert "device_allow" not in effective
+
+    def test_approving_one_device_capability_keeps_the_full_list(self) -> None:
+        """
+        Misma granularidad que la validación de coherencia (I-3):
+        device_allow es una lista plana sin capacidad por entrada, así
+        que aprobar CUALQUIER capacidad de dispositivo habilita la
+        lista completa -- limitación ya aceptada, no nueva acá.
+        """
+        sandbox = {"devices": "explicit", "device_allow": ["/dev/sda rwm", "/dev/video0 rw"]}
+        effective = effective_sandbox(sandbox, approved_capabilities={"camera"})
+        assert effective["devices"] == "explicit"
+        assert effective["device_allow"] == ["/dev/sda rwm", "/dev/video0 rw"]
+
+    def test_never_widens_what_the_manifest_already_requested(self) -> None:
+        """
+        Aprobar una capacidad nunca es una promesa de otorgar MÁS de lo
+        que el manifiesto ya pedía -- invariante 3 (el manifiesto es
+        datos, nunca una petición que la aprobación pueda superar).
+        """
+        sandbox = {"network": "none", "devices": "none"}
+        effective = effective_sandbox(
+            sandbox, approved_capabilities={"network.egress", "gpu.compute", "camera"}
+        )
+        assert effective["network"] == "none"
+        assert effective["devices"] == "none"
+
+    def test_poc_from_reaudit_deny_everything_grants_nothing(self) -> None:
+        """
+        PoC textual de R-1: capabilities: [network.egress, camera],
+        sandbox pide host-egress + device_allow de /dev/sda y
+        /dev/video0, el usuario deniega TODO -- el sandbox efectivo no
+        debe otorgar ni red ni dispositivos.
+        """
+        sandbox = {
+            "filesystem": "restricted",
+            "network": "host-egress",
+            "devices": "explicit",
+            "device_allow": ["/dev/sda rwm", "/dev/video0 rw"],
+        }
+        effective = effective_sandbox(sandbox, approved_capabilities=set())
+        assert effective["network"] == "none"
+        assert effective["devices"] == "none"
+        assert "device_allow" not in effective
+        # filesystem: restricted no se toca -- fuera de alcance de R-1
+        # (ver el comentario de effective_sandbox sobre por qué).
+        assert effective["filesystem"] == "restricted"

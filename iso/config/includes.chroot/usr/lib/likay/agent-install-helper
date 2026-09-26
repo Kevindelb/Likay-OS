@@ -35,7 +35,13 @@ import sys
 import time
 from pathlib import Path
 
-from likay_broker.manifest import AgentManifest, ManifestError, parse_manifest_file, validate_requirements_path
+from likay_broker.manifest import (
+    AgentManifest,
+    ManifestError,
+    effective_sandbox,
+    parse_manifest_file,
+    validate_requirements_path,
+)
 
 LIKAY_AGENT_MOUNT = Path("/mnt/likay-agent")
 USB_BUNDLE_LABEL = "LIKAY-BUNDLE"
@@ -773,16 +779,23 @@ _SANDBOX_BASE_DIRECTIVES = [
 ]
 
 
-def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
+def _systemd_unit_text(manifest: AgentManifest, linux_user: str, sandbox: dict) -> str:
     """
     Traduce sandbox:/runtime: del manifiesto a directivas systemd
     concretas -- ver la tabla de mapeo en docs/AGENT_INTERFACE.md
     sección Sandbox. bind_host NUNCA sale del manifiesto (no es un campo
     legal, ver manifest.py/el schema) -- acá se fuerza --host
     127.0.0.1 por construcción, sin excepción.
+
+    `sandbox` es un parámetro EXPLÍCITO, nunca `manifest.sandbox`
+    directo -- hallazgo R-1 (re-auditoría de seguridad 2026-09-26): el
+    sandbox real generado tiene que ser el EFECTIVO tras la aprobación
+    del usuario (`likay_broker.manifest.effective_sandbox`), no lo que
+    el manifiesto pide en crudo. El caller (`op_generate_unit`) es
+    quien decide cuál de los dos pasar; esta función ya no puede leer
+    `manifest.sandbox` por su cuenta y saltarse esa decisión sin querer.
     """
     paths = _agent_paths(manifest.short_id)
-    sandbox = manifest.sandbox
     runtime = manifest.runtime
 
     directives = list(_SANDBOX_BASE_DIRECTIVES)
@@ -881,7 +894,7 @@ WantedBy=multi-user.target
 """
 
 
-def _quadlet_unit_text(manifest: AgentManifest, linux_user: str) -> str:
+def _quadlet_unit_text(manifest: AgentManifest, linux_user: str, sandbox: dict) -> str:
     """
     Sandbox Adapter OCI (Fase C, ver docs/AGENT_INTERFACE.md sección
     Sandbox): equivalente de _systemd_unit_text() para runtime.type:
@@ -904,9 +917,12 @@ def _quadlet_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     de host (quién corre Podman, y por lo tanto quién es dueño del
     contenedor y sus namespaces) se fija con [Service] User=/Group=,
     igual que en el caso Python.
+
+    `sandbox` explícito, no `manifest.sandbox` -- mismo motivo que
+    _systemd_unit_text (hallazgo R-1, re-auditoría 2026-09-26): tiene
+    que ser el sandbox EFECTIVO tras la aprobación real del usuario.
     """
     paths = _agent_paths(manifest.short_id)
-    sandbox = manifest.sandbox
     runtime = manifest.runtime
     oci_runtime = runtime.get("oci", {})
     image = oci_runtime.get("image", {})
@@ -1086,18 +1102,49 @@ def op_generate_unit() -> dict:
     arrancar. Mismo nombre resultante en ambos casos
     (likay-agent-<short_id>.service) -- op_activate_agent no necesita
     saber cuál de los dos generó la unidad.
+
+    Hallazgo R-1 (re-auditoría de seguridad 2026-09-26): antes de este
+    fix, esta operación no recibía ningún argumento -- generaba la
+    unidad SIEMPRE a partir de manifest.sandbox crudo, sin importar qué
+    hubiera aprobado o denegado el usuario en la TUI. Denegar una
+    capacidad era cosmético: la unidad real seguía otorgando exactamente
+    lo que el manifiesto pedía. Ahora recibe la lista de capacidades
+    APROBADAS (JSON, por stdin -- mismo transporte que set_secret,
+    nunca argv) y deriva el sandbox EFECTIVO con
+    likay_broker.manifest.effective_sandbox() antes de generar nada.
     """
     manifest = _load_manifest_for_operation()
     if not manifest.is_service:
         raise HelperError(f"{manifest.agent_id} no tiene runtime -- no es un servicio instalable")
     runtime_type = _require_known_runtime_type(manifest)
 
+    raw_stdin = sys.stdin.read()
+    if not raw_stdin.strip():
+        raise HelperError(
+            "generate_unit necesita la lista de capacidades aprobadas como JSON "
+            "por stdin (p.ej. '[]' si no se aprobó ninguna) -- el sandbox real "
+            "se deriva de lo que el usuario aprobó, no del manifiesto crudo."
+        )
+    try:
+        approved_raw = json.loads(raw_stdin)
+    except json.JSONDecodeError as exc:
+        raise HelperError(f"capacidades aprobadas: JSON inválido por stdin: {exc}") from exc
+    if not isinstance(approved_raw, list) or not all(isinstance(c, str) for c in approved_raw):
+        raise HelperError("capacidades aprobadas: se esperaba una lista JSON de strings")
+
+    # Defensa en profundidad: una capacidad "aprobada" que ni siquiera
+    # está en el manifiesto no tiene ningún efecto -- nunca amplía lo
+    # que el manifiesto ya pedía, solo puede rebajarlo (ver
+    # effective_sandbox).
+    approved = set(approved_raw) & set(manifest.capabilities)
+    sandbox = effective_sandbox(manifest.sandbox, approved)
+
     linux_user = f"agent-{manifest.short_id}"
     if runtime_type == "python":
-        unit_text = _systemd_unit_text(manifest, linux_user)
+        unit_text = _systemd_unit_text(manifest, linux_user, sandbox)
         unit_path = Path(f"/etc/systemd/system/likay-agent-{manifest.short_id}.service")
     else:
-        unit_text = _quadlet_unit_text(manifest, linux_user)
+        unit_text = _quadlet_unit_text(manifest, linux_user, sandbox)
         QUADLET_DIR.mkdir(parents=True, exist_ok=True)
         unit_path = QUADLET_DIR / f"likay-agent-{manifest.short_id}.container"
     unit_path.write_text(unit_text)

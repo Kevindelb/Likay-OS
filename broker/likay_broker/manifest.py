@@ -64,19 +64,31 @@ class AgentManifest:
         del Broker -- un bundle malicioso podía suplantar a un agente ya
         instalado con solo elegir el mismo último componente.
 
-        Ahora se deriva de agent_id COMPLETO: un sufijo hash de 10 chars
-        hex de sha256(agent_id) hace que dos ids distintos no colisionen
-        en la práctica (ni siquiera si su forma sanitizada coincidiera,
-        porque el hash es sobre el string original, no sobre la forma
+        Ahora se deriva de agent_id COMPLETO: un sufijo hash hex de
+        sha256(agent_id) hace que dos ids distintos no colisionen en la
+        práctica (ni siquiera si su forma sanitizada coincidiera, porque
+        el hash es sobre el string original, no sobre la forma
         sanitizada). El prefijo humano-legible (último componente,
         truncado) es solo para que los nombres sigan siendo legibles en
         `ps`/`systemctl` -- la unicidad real la da el hash. Reinstalar el
         MISMO agent_id siempre deriva el mismo short_id (idempotente, no
         rompe el caso de reemplazar/actualizar un agente ya instalado).
+
+        **Re-auditoría de seguridad (2026-09-26, R-4): 10 hex chars (40
+        bits) era brute-forceable.** El atacante elige el `agent_id`
+        completo libremente (mismo último componente que el agente que
+        quiere suplantar) -- encontrar una segunda preimagen en un
+        espacio de 40 bits es de ~2^40 evaluaciones de SHA-256, del
+        orden de minutos en una sola GPU de gama alta, no un obstáculo
+        real. 16 hex chars (64 bits) sube el costo a ~2^64, fuera de
+        alcance práctico. El prefijo legible baja a 9 chars (antes 12)
+        para que `agent-<prefijo>-<hash>` siga entrando en el límite
+        clásico de 32 caracteres de un nombre de usuario Linux:
+        `agent-` (6) + 9 + `-` (1) + 16 = 32 exacto.
         """
-        digest = hashlib.sha256(self.agent_id.encode("utf-8")).hexdigest()[:10]
+        digest = hashlib.sha256(self.agent_id.encode("utf-8")).hexdigest()[:16]
         last_component = self.agent_id.rsplit(".", 1)[-1]
-        human_prefix = re.sub(r"[^a-z0-9-]", "-", last_component)[:12].strip("-") or "agent"
+        human_prefix = re.sub(r"[^a-z0-9-]", "-", last_component)[:9].strip("-") or "agent"
         return f"{human_prefix}-{digest}"
 
     @property
@@ -201,7 +213,43 @@ def _validate_sandbox_capability_coherence(raw: dict[str, Any]) -> None:
             "a dispositivos del host, pero capabilities no declara ninguna "
             f"capacidad de dispositivo ({', '.join(sorted(_DEVICE_RELATED_CAPABILITIES))}) "
             "-- el usuario nunca aprobaría algo que ni siquiera ve declarado."
-            )
+        )
+
+
+def effective_sandbox(sandbox: dict[str, Any], approved_capabilities: set[str]) -> dict[str, Any]:
+    """
+    Hallazgo R-1 (re-auditoría de seguridad 2026-09-26, sobre I-3):
+    _validate_sandbox_capability_coherence (arriba) solo garantiza que
+    el MANIFIESTO sea coherente consigo mismo -- nunca conectaba la
+    aprobación/denegación REAL del usuario en la TUI con la unidad
+    systemd/Quadlet generada. `op_generate_unit()` no recibía la lista
+    aprobada en absoluto: denegar `network.egress` en la TUI no le
+    sacaba `sandbox.network: host-egress` a la unidad generada -- la
+    denegación era cosmética, el agente seguía recibiendo exactamente
+    lo que el manifiesto pedía, aprobado o no.
+
+    Esta función deriva el sandbox EFECTIVO -- el que de verdad hay que
+    generar -- rebajando lo declarado a lo que `approved_capabilities`
+    realmente contiene. Nunca AMPLÍA lo declarado (un manifiesto que
+    pide `network: none` sigue con `network: none` aunque se apruebe
+    `network.egress` -- aprobar una capacidad nunca es una promesa de
+    otorgar más de lo que el manifiesto ya pedía, invariante 3).
+
+    Misma granularidad que la validación de coherencia: `device_allow`
+    es una lista plana sin capacidad por entrada, así que "alguna
+    capacidad de dispositivo aprobada" habilita la lista COMPLETA, no
+    entrada por entrada -- limitación ya aceptada ahí, no nueva acá.
+    """
+    effective = dict(sandbox)
+
+    if effective.get("network") == "host-egress" and "network.egress" not in approved_capabilities:
+        effective["network"] = "none"
+
+    if effective.get("devices") == "explicit" and not (approved_capabilities & _DEVICE_RELATED_CAPABILITIES):
+        effective["devices"] = "none"
+        effective.pop("device_allow", None)
+
+    return effective
 
 
 def parse_manifest_file(path: Path) -> AgentManifest:

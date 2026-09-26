@@ -19,7 +19,15 @@ if ! id kal >/dev/null 2>&1; then
 fi
 
 python3 -m venv /opt/kal/.venv
-/opt/kal/.venv/bin/pip install --no-cache-dir --upgrade pip
+# Hallazgo de la re-auditoría de seguridad (2026-09-26, R-5): este hook
+# hasheaba las dependencias que instala (ver B-A2 abajo) pero seguía
+# haciendo "pip install --upgrade pip" SIN hash ni versión fija justo
+# antes -- exactamente la misma clase de riesgo que B-A2 trató como
+# Alto, un nivel más arriba (el propio pip que hace cumplir los
+# hashes). El pip que trae python3-venv (paquete de Ubuntu, firmado por
+# el repo oficial vía apt) ya soporta --require-hashes de sobra --
+# deliberadamente NO se lo reemplaza por uno recién bajado de PyPI sin
+# verificar.
 # Hallazgo de la auditoría de seguridad (2026-09-26, B-A2): antes de
 # este fix, esto resolvía las dependencias de kal (requirements-core.txt/
 # requirements-dev.txt, con ">=" sin techo) sin hashes -- una release

@@ -58,11 +58,16 @@ _DEFAULT_RUNTIME = {
 }
 
 
-def _manifest(sandbox: dict, runtime: dict | None = None, secrets: list[dict] | None = None) -> AgentManifest:
+def _manifest(
+    sandbox: dict,
+    runtime: dict | None = None,
+    secrets: list[dict] | None = None,
+    capabilities: list[str] | None = None,
+) -> AgentManifest:
     return AgentManifest(raw={
         "schema_version": 2,
         "agent": {"id": "com.example.test-agent"},
-        "capabilities": [],
+        "capabilities": capabilities or [],
         "runtime": runtime or _DEFAULT_RUNTIME,
         "sandbox": sandbox,
         "secrets": secrets or [],
@@ -77,7 +82,7 @@ class TestSandboxToSystemdMapping:
         no un único "data" genérico como en v1.
         """
         manifest = _manifest({"filesystem": "restricted", "network": "none", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "ProtectSystem=strict" in unit
         assert "ProtectHome=yes" in unit
@@ -86,30 +91,30 @@ class TestSandboxToSystemdMapping:
 
     def test_filesystem_none_has_no_read_write_paths(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "ReadWritePaths=" not in unit
 
     def test_filesystem_full_is_rejected(self, helper) -> None:
         manifest = _manifest({"filesystem": "full", "network": "none", "devices": "none"})
         with pytest.raises(helper.HelperError, match="no es un valor legal"):
-            helper._systemd_unit_text(manifest, "agent-test-agent")
+            helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
     def test_network_none_gets_private_network(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "PrivateNetwork=yes" in unit
 
     def test_network_host_egress_has_no_private_network(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "host-egress", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "PrivateNetwork=yes" not in unit
 
     def test_devices_none_gets_private_devices(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "PrivateDevices=yes" in unit
         assert "DeviceAllow=" not in unit
@@ -119,7 +124,7 @@ class TestSandboxToSystemdMapping:
             "filesystem": "none", "network": "none", "devices": "explicit",
             "device_allow": ["/dev/dri/renderD128 rw"],
         })
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "PrivateDevices=no" in unit
         assert "DevicePolicy=closed" in unit
@@ -127,7 +132,7 @@ class TestSandboxToSystemdMapping:
 
     def test_baseline_directives_always_present(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         for directive in helper._SANDBOX_BASE_DIRECTIVES:
             assert directive in unit
@@ -137,7 +142,7 @@ class TestSandboxToSystemdMapping:
             "filesystem": "none", "network": "none", "devices": "none",
             "memory_max": "4G", "cpu_quota": "200%", "tasks_max": 512,
         })
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "MemoryMax=4G" in unit
         assert "CPUQuota=200%" in unit
@@ -155,7 +160,7 @@ class TestExecStartAlwaysLoopback:
                 "python": {"command": "uvicorn", "entry_point": "app:app", "requirements_file": "requirements.txt"},
             },
         )
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
         assert "--host 127.0.0.1" in exec_line
@@ -178,7 +183,7 @@ class TestExecStartAlwaysLoopback:
                 "python": {"command": "uvicorn", "entry_point": "app:app", "requirements_file": "requirements.txt"},
             },
         )
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
         assert "0.0.0.0" not in exec_line
@@ -193,7 +198,7 @@ class TestEnvironment:
         taxonomy en docs/AGENT_INTERFACE.md.
         """
         manifest = _manifest({"filesystem": "restricted", "network": "none", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert f"Environment=AGENT_CONFIG_DIR=/mnt/likay-agent/{manifest.short_id}/config" in unit
         assert f"Environment=AGENT_STATE_DIR=/mnt/likay-agent/{manifest.short_id}/state" in unit
@@ -208,7 +213,7 @@ class TestEnvironment:
                 "python": {"command": "uvicorn", "entry_point": "app:app", "requirements_file": "requirements.txt"},
             },
         )
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Environment=AGENT_ENV=production" in unit
 
@@ -233,7 +238,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "none", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         # Hallazgo real (2026-09-20, OpenClaw real en QEMU): Image= debe
         # llevar el digest, nunca una referencia bare -- si no, Quadlet
@@ -267,7 +272,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "none", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
         service_section = unit.split("[Service]")[1]
 
         assert "LockPersonality=yes" in service_section
@@ -293,7 +298,7 @@ class TestQuadletUnitMapping:
             runtime=_DEFAULT_OCI_RUNTIME,
             secrets=[{"id": "OPENCLAW_GATEWAY_TOKEN", "required": True}],
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Secret=OPENCLAW_GATEWAY_TOKEN,type=env,target=OPENCLAW_GATEWAY_TOKEN" in unit
 
@@ -302,7 +307,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "none", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Secret=" not in unit
 
@@ -311,7 +316,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "restricted", "network": "none", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "ReadOnly=true" in unit
         # :Z,U -- hallazgo real (2026-09-20, OpenClaw real en QEMU): sin
@@ -326,7 +331,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "none", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Volume=" not in unit
         assert "ReadOnly=true" not in unit
@@ -336,7 +341,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "none", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Network=none" in unit
 
@@ -345,7 +350,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "host-egress", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Network=" not in unit
 
@@ -354,7 +359,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "host-egress", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "PublishPort=127.0.0.1:8000:8000" in unit
 
@@ -363,7 +368,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "restricted", "network": "none", "devices": "none"},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Environment=AGENT_CONFIG_DIR=/var/lib/likay-agent/config" in unit
         assert "Environment=AGENT_STATE_DIR=/var/lib/likay-agent/state" in unit
@@ -374,7 +379,7 @@ class TestQuadletUnitMapping:
         runtime = dict(_DEFAULT_OCI_RUNTIME)
         runtime["env"] = {"OPENCLAW_MODE": "gateway"}
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"}, runtime=runtime)
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "Environment=OPENCLAW_MODE=gateway" in unit
 
@@ -383,7 +388,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "none", "devices": "none", "memory_max": "1G", "cpu_quota": "100%", "tasks_max": 256},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
         service_section = unit.split("[Service]")[1].split("[Install]")[0]
 
         assert "MemoryMax=1G" in service_section
@@ -395,7 +400,7 @@ class TestQuadletUnitMapping:
             {"filesystem": "none", "network": "none", "devices": "explicit", "device_allow": ["/dev/dri/renderD128"]},
             runtime=_DEFAULT_OCI_RUNTIME,
         )
-        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         assert "AddDevice=/dev/dri/renderD128" in unit
 
@@ -405,7 +410,7 @@ class TestQuadletUnitMapping:
             runtime=_DEFAULT_OCI_RUNTIME,
         )
         with pytest.raises(helper.HelperError, match="no es un valor legal"):
-            helper._quadlet_unit_text(manifest, "agent-test-agent")
+            helper._quadlet_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
 
 class TestRequireKnownRuntimeType:
@@ -454,6 +459,98 @@ class TestLoadOciImageGuards:
         )
         with pytest.raises(helper.HelperError, match="no usa load_oci_image"):
             helper.op_load_oci_image()
+
+
+class TestGenerateUnitCapabilityGating:
+    """
+    op_generate_unit (hallazgo R-1, re-auditoría de seguridad
+    2026-09-26): antes de este fix, generate_unit no recibía la lista
+    de capacidades aprobadas en absoluto -- armaba la unidad SIEMPRE a
+    partir de manifest.sandbox crudo, sin importar qué hubiera aprobado
+    o denegado el usuario en la TUI. Estos tests verifican que el
+    stdin (capacidades aprobadas, JSON) efectivamente llega a
+    effective_sandbox() y de ahí a _systemd_unit_text/_quadlet_unit_text
+    -- sin tocar el filesystem real (Path.write_text/chmod
+    monkeypatcheados a no-ops).
+    """
+
+    def _run_generate_unit_capturing_sandbox(
+        self, helper, monkeypatch, manifest, approved_json: str, unit_text_attr: str
+    ) -> dict:
+        captured = {}
+
+        def fake_unit_text(manifest_arg, linux_user_arg, sandbox_arg):
+            captured["sandbox"] = sandbox_arg
+            return "unidad de prueba, contenido irrelevante"
+
+        monkeypatch.setattr(helper, unit_text_attr, fake_unit_text)
+        monkeypatch.setattr(helper, "_load_manifest_for_operation", lambda: manifest)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(approved_json))
+        monkeypatch.setattr(helper.Path, "write_text", lambda self, *a, **k: None)
+        monkeypatch.setattr(helper.Path, "chmod", lambda self, *a, **k: None)
+        monkeypatch.setattr(helper.Path, "mkdir", lambda self, *a, **k: None)
+
+        helper.op_generate_unit()
+        return captured["sandbox"]
+
+    def test_denied_network_capability_does_not_reach_the_unit(self, helper, monkeypatch) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "host-egress", "devices": "none"},
+            capabilities=["network.egress"],
+        )
+        sandbox = self._run_generate_unit_capturing_sandbox(
+            helper, monkeypatch, manifest, approved_json="[]", unit_text_attr="_systemd_unit_text"
+        )
+        assert sandbox["network"] == "none"
+
+    def test_approved_network_capability_reaches_the_unit(self, helper, monkeypatch) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "host-egress", "devices": "none"},
+            capabilities=["network.egress"],
+        )
+        sandbox = self._run_generate_unit_capturing_sandbox(
+            helper, monkeypatch, manifest,
+            approved_json='["network.egress"]', unit_text_attr="_systemd_unit_text",
+        )
+        assert sandbox["network"] == "host-egress"
+
+    def test_oci_runtime_denied_capability_downgrades_quadlet_sandbox(self, helper, monkeypatch) -> None:
+        manifest = _manifest(
+            {"filesystem": "none", "network": "host-egress", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+            capabilities=["network.egress"],
+        )
+        sandbox = self._run_generate_unit_capturing_sandbox(
+            helper, monkeypatch, manifest, approved_json="[]", unit_text_attr="_quadlet_unit_text"
+        )
+        assert sandbox["network"] == "none"
+
+    def test_capability_not_declared_in_manifest_has_no_effect(self, helper, monkeypatch) -> None:
+        """
+        Defensa en profundidad: una capacidad "aprobada" que ni
+        siquiera está en el manifiesto se ignora -- nunca puede AMPLIAR
+        lo que el manifiesto pedía.
+        """
+        manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"}, capabilities=[])
+        sandbox = self._run_generate_unit_capturing_sandbox(
+            helper, monkeypatch, manifest,
+            approved_json='["network.egress"]', unit_text_attr="_systemd_unit_text",
+        )
+        assert sandbox["network"] == "none"
+
+    def test_rejects_empty_stdin(self, helper, monkeypatch) -> None:
+        manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
+        monkeypatch.setattr(helper, "_load_manifest_for_operation", lambda: manifest)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+        with pytest.raises(helper.HelperError, match="capacidades aprobadas"):
+            helper.op_generate_unit()
+
+    def test_rejects_invalid_json(self, helper, monkeypatch) -> None:
+        manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
+        monkeypatch.setattr(helper, "_load_manifest_for_operation", lambda: manifest)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
+        with pytest.raises(helper.HelperError, match="JSON inválido"):
+            helper.op_generate_unit()
 
 
 class TestSetSecretGuards:
@@ -679,7 +776,7 @@ class TestExecStartOptionalPort:
 
     def test_port_present_is_preserved(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
         assert "--host 127.0.0.1 --port 8000" in exec_line
@@ -687,7 +784,7 @@ class TestExecStartOptionalPort:
     def test_absent_port_does_not_render_None(self, helper) -> None:
         runtime = {"type": "python", "python": _DEFAULT_RUNTIME["python"]}
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"}, runtime=runtime)
-        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent", manifest.sandbox)
 
         exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
         assert "None" not in exec_line

@@ -380,7 +380,14 @@ def main(stdscr) -> int:
             run_helper("install_bundle")
 
         draw_message(stdscr, "Paso 4/6", ["Generando la unidad systemd sandboxeada..."], footer="")
-        run_helper("generate_unit")
+        # Hallazgo R-1 (re-auditoría de seguridad 2026-09-26): antes de
+        # este fix, "approved" (arriba, lo que el usuario realmente
+        # aprobó/denegó) nunca se mandaba acá -- generate_unit armaba
+        # el sandbox SIEMPRE a partir del manifiesto crudo, sin importar
+        # la decisión real del usuario. Ahora viaja por stdin como JSON
+        # (mismo transporte que set_secret usa para el valor, nunca
+        # argv) y el helper deriva el sandbox EFECTIVO de ahí.
+        run_helper("generate_unit", stdin_data=json.dumps(approved))
 
         draw_message(stdscr, "Paso 5/6", ["Registrando las capacidades aprobadas en el Broker..."], footer="")
         try:
