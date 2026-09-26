@@ -60,6 +60,73 @@ La visión de un kernel propio e independiente queda como objetivo a
 **largo plazo**, a perseguir con la colaboración de una comunidad — no
 como punto de partida.
 
+## Decisión de alcance: el techo de aislamiento es namespaces/cgroups, no microVM (2026-09-26)
+
+Cada agente corre con su propio usuario Linux, su propio namespace de
+red/mount/PID, cgroup con límites de memoria/CPU/tareas,
+`DropCapability=ALL`, `ProtectSystem=strict` (ver
+[`docs/AGENT_INTERFACE.md`](AGENT_INTERFACE.md) sección Sandbox). Es
+real — lo prueba `malicious-agent` (7 intentos de escape, los 7
+DENIED, en hardware real). Pero **todos los agentes y el propio Broker
+comparten un solo kernel**: cada namespace, cada cgroup, cada
+`NoNewPrivileges` es una regla que ese MISMO kernel aplica, no una
+frontera de hardware. Un bug del kernel en el subsistema de
+namespaces/cgroups rompe el aislamiento de todos los agentes a la vez
+(la categoría de CVEs de escape de runc/Docker, dirty pipe, dirty cow,
+etc.) — algo que ni namespaces ni seccomp pueden evitar por diseño,
+porque la frontera vive DENTRO del mismo kernel que se está intentando
+contener.
+
+**Por qué esto es una decisión de alcance, no una laguna sin ver.**
+Frente a un modelo tipo E2B/Modal/Firecracker (una microVM por
+sandbox, kernel invitado propio, la frontera real es el hipervisor)
+Likay-OS se queda un escalón abajo en aislamiento puro. Es defendible
+para lo que Likay-OS es hoy — **un sistema que una sola persona
+instala en su propia máquina, un agente activo a la vez (decisión de
+alcance de V1)** — no una plataforma multi-tenant donde un escape
+significa que el código de un cliente cruza a los datos de otro. El
+peor caso de un escape de namespace acá es "el agente consigue root en
+la misma máquina cuyo dueño ya tiene acceso físico" — grave, pero un
+perfil de riesgo distinto al que justifica pagar el costo de una VM
+por sandbox. Lo que namespaces/cgroups NO cubren, específicamente, es
+el 0-day de kernel — una categoría real pero más rara que las que ya
+se probaron y contienen hoy (lectura de archivos fuera del área
+concedida, escalada de privilegios, dispositivos crudos, puertos
+privilegiados).
+
+**Esta razón (single-tenant) tiene fecha de vencimiento — corrección
+explícita del usuario (2026-09-26).** El razonamiento de arriba vale
+para el V1 de hoy, pero la filosofía local-first no significa
+"single-user para siempre": cuando el producto salga al mercado tiene
+que estar preparado para modelos en la nube (ya lo está — `runtime.env`
+no le impone al agente usar el LLM propio de Likay-OS) y, más
+importante acá, para **una posible red de usuarios y multiagentes**.
+En cuanto exista más de un agente activo compartiendo la misma máquina
+(así sea del mismo dueño) o infraestructura compartida entre usuarios
+distintos, el argumento "el peor caso es que el dueño se compromete a
+sí mismo" deja de aplicar tal cual — un agente que escapa deja de
+amenazar solo a su propio dueño, empieza a amenazar a OTRO agente (o a
+otro usuario) en la misma infraestructura. Eso es, en los hechos, el
+mismo perfil de riesgo que justifica una VM por sandbox en E2B/Modal.
+**No es un cambio para V1** (que sigue siendo un agente a la vez, una
+sola persona, decisión de alcance ya tomada), pero significa que "el
+techo de aislamiento actual alcanza" deja de ser cierto ANTES de
+multiagentes/red de usuarios, no después — revisar esta decisión tiene
+que ser parte explícita de diseñar esas dos capacidades, no algo para
+notar recién cuando ya estén construidas.
+
+**Camino conocido para subir el techo, si hace falta más adelante:**
+`gVisor` (`runsc`) es un runtime OCI más — compatible con Podman/Quadlet
+sin rediseñar la arquitectura del Sandbox Adapter (Fase C), sube el
+aislamiento del runtime OCI reinterpretando las syscalls en userspace
+en vez de dejarlas llegar al kernel real. Firecracker/microVM real
+(kernel invitado propio por agente, vía algo como Kata Containers) es
+un salto mucho más grande — reemplaza el storage taxonomy actual
+(bind mounts → virtio-fs/virtio-blk) y la identidad del Broker
+(`SO_PEERCRED` sobre un socket Unix no cruza una frontera de VM, haría
+falta `virtio-vsock` con un mecanismo de identidad propio) — sería una
+etapa de roadmap en sí misma, no una extensión de Etapa 2/3.
+
 ---
 
 ## Etapa 1 — ISO live-boot
@@ -239,5 +306,19 @@ propia partición del disco, con Likay-OS ya instalado y corriendo —
 eso es trabajo de Etapa 2 (instalador real), no de Etapa 1. La
 interfaz genérica para montar cualquier agente (issue
 [#2](https://github.com/Kevindelb/Likay-OS/issues/2), Fase 2) se
-diseña junto con esa etapa, no antes. Ninguna etapa más allá de la 1
-está implementada.
+diseña junto con esa etapa, no antes.
+
+**Etapa 2, en progreso — la interfaz genérica (Agent Broker) ya está
+implementada y validada en hardware real** (ver
+[`docs/AGENT_INTERFACE.md`](AGENT_INTERFACE.md)): instalación de un
+agente de terceros que nunca se horneó en la imagen (transporte USB,
+manifiesto validado, sandbox systemd/Quadlet OCI generado por agente),
+y el fixture `malicious-agent` (7 intentos de escape, los 7 DENIED)
+corrido contra ese sandbox en una laptop real, no solo en QEMU. Lo que
+sigue abierto de Etapa 2, sin cerrar todavía: Secure Boot/TPM y LUKS
+(explícitamente pospuestos a esta etapa, ver más abajo, no
+implementados aún), y una auditoría de seguridad propia (2026-09-26,
+ver `docs/AUDITORIA-SEGURIDAD.md`/`docs/REAUDITORIA-SEGURIDAD.md`) que
+encontró y cerró varios hallazgos reales sobre el Broker/instalador —
+tratarla como el estado de referencia actual, no esta sección, para el
+detalle hallazgo por hallazgo.

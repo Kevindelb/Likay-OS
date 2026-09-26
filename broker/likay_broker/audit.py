@@ -28,6 +28,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -134,6 +135,15 @@ class AuditLog:
         with open(self.path, "a+", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
+                # Hallazgo de la auditoría 2026-09-26: sin esto el archivo
+                # se creaba con el umask por defecto de systemd (0022) y
+                # quedaba 0644 -- legible por cualquier usuario local,
+                # incluido un agente instalado. Mismo criterio que
+                # policy_store._write_atomic (0640).
+                try:
+                    os.chmod(self.path, 0o640)
+                except OSError:
+                    pass  # best-effort: nunca tumbar un registro por esto
                 f.seek(0)
                 event.prev_hash = self._read_last_hash(f)
                 event.event_hash = event.compute_hash()

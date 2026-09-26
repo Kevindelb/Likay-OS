@@ -70,6 +70,7 @@ class BrokerServer:
         audit_log: AuditLog | None = None,
         max_requests_per_connection: int = 100,
         idle_timeout: float = 30.0,
+        max_connections: int = 128,
     ) -> None:
         self._socket_path = socket_path
         self._policy_store = policy_store or PolicyStore()
@@ -89,6 +90,15 @@ class BrokerServer:
         # más simplemente reconecta, no queda bloqueado para siempre.
         self._max_requests_per_connection = max_requests_per_connection
         self._idle_timeout = idle_timeout
+        # Hallazgo de la auditoría 2026-09-26: cada conexión aceptada
+        # arrancaba un hilo nuevo sin ningún tope -- cualquier usuario
+        # local (incluido un agente instalado, el socket es 0666 a
+        # propósito) podía abrir conexiones hasta agotar memoria/PIDs del
+        # Broker, que no tiene límites de cgroup. Este semáforo acota las
+        # conexiones vivas; el que sobra se cierra de inmediato en vez de
+        # encolar un hilo más (falla rápido y acotado, nunca crece).
+        self._conn_slots = threading.BoundedSemaphore(max_connections)
+        self._max_connections = max_connections
 
     def serve_forever(self) -> None:
         # En producción, systemd ya crea este directorio (RuntimeDirectory=
@@ -113,6 +123,11 @@ class BrokerServer:
         try:
             while True:
                 conn, _ = srv.accept()
+                if not self._conn_slots.acquire(blocking=False):
+                    # Sin cupo: cerrar de inmediato. Nunca se encola un
+                    # hilo más allá del tope -- ver _conn_slots en __init__.
+                    conn.close()
+                    continue
                 threading.Thread(target=self._handle_connection, args=(conn,), daemon=True).start()
         finally:
             srv.close()
@@ -120,9 +135,16 @@ class BrokerServer:
                 self._socket_path.unlink()
 
     def _handle_connection(self, conn: socket.socket) -> None:
+        """Libera el cupo de conexión pase lo que pase (ver _conn_slots)."""
+        try:
+            self._handle_connection_locked(conn)
+        finally:
+            self._conn_slots.release()
+
+    def _handle_connection_locked(self, conn: socket.socket) -> None:
         with conn:
             try:
-                pid, uid, gid = _peer_credentials(conn)
+                _pid, uid, _gid = _peer_credentials(conn)
             except OSError:
                 return  # conexión murió antes de poder leer las credenciales
 

@@ -10,8 +10,9 @@
 # que nos toca a nosotros es solo asegurar que los blobs de una corrida
 # anterior estén ahí ANTES de llamarlo: eso lo hace auto/build (host),
 # sembrando /usr/share/ollama/.ollama/models desde iso/model-cache/ vía
-# hardlinks antes de arrancar `lb build` — así este `pull` no repite red
-# si el cache ya está caliente.
+# copia real (ver B-M2, auditoría 2026-09-26 -- ya no hardlinks, para no
+# compartir inodo con este repositorio del host) antes de arrancar
+# `lb build` — así este `pull` no repite red si el cache ya está caliente.
 set -euo pipefail
 
 # shellcheck disable=SC1091
@@ -24,15 +25,44 @@ source /etc/likay-os/model.conf  # define MODEL_TAG
 # bindear el puerto default rompería uno de los dos, o peor, este pull
 # terminaría hablándole al Ollama equivocado.
 BUILD_OLLAMA_PORT=11434
-while ss -tln 2>/dev/null | grep -q ":${BUILD_OLLAMA_PORT} "; do
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-B3): este while
+# no tenía cota -- en el caso patológico (host con cientos de puertos
+# consecutivos ocupados, o un bug que hiciera "ss" devolver siempre
+# match) hubiera girado para siempre. 200 intentos alcanza de sobra
+# para cualquier escenario real, y falla ruidosamente en vez de
+# colgarse si algo raro pasa.
+for _ in $(seq 1 200); do
+    if ! ss -tln 2>/dev/null | grep -q ":${BUILD_OLLAMA_PORT} "; then
+        break
+    fi
     BUILD_OLLAMA_PORT=$((BUILD_OLLAMA_PORT + 1))
 done
+if ss -tln 2>/dev/null | grep -q ":${BUILD_OLLAMA_PORT} "; then
+    echo "0200: no se encontró un puerto libre tras 200 intentos desde 11434 -- abortando." >&2
+    exit 1
+fi
 
 export OLLAMA_HOST="127.0.0.1:${BUILD_OLLAMA_PORT}"
 
-su ollama -s /bin/sh -c "OLLAMA_HOST=${OLLAMA_HOST} ollama serve" &
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-B1): interpolar
+# ${OLLAMA_HOST}/${MODEL_TAG} crudo dentro de un "sh -c" string permite
+# que un valor con metacaracteres de shell (comillas, ";", backticks)
+# inyecte comandos extra -- impacto bajo hoy (OLLAMA_HOST es siempre
+# numérico, MODEL_TAG viene de un archivo del propio repo, no de un
+# input externo), pero "printf %q" lo cierra del todo sin cambiar la
+# forma de la invocación (ni arriesgar romper el paso de argumentos
+# real de "su -c", no verificable acá sin correr esto como root de
+# verdad contra el usuario ollama).
+su ollama -s /bin/sh -c "OLLAMA_HOST=$(printf '%q' "${OLLAMA_HOST}") ollama serve" &
 OLLAMA_PID=$!
-trap 'kill "${OLLAMA_PID}" 2>/dev/null || true; wait "${OLLAMA_PID}" 2>/dev/null || true' EXIT
+# `kill "$OLLAMA_PID"` solo mata a `su` -- el `ollama serve` real queda
+# como hijo/nieto con OTRO pid y sobrevive, sondeando /sys (detección de
+# GPU) para siempre. Eso deja /sys "ocupado" en el teardown del chroot
+# (lb_chroot_sysfs remove), bloqueando el build entero. Matar por PUERTO
+# (fuser -k, acotado al puerto elegido para ESTE build, nunca el 11434
+# default de un Ollama real que pueda estar corriendo en el host) mata
+# al proceso real sin importar la forma del árbol de procesos.
+trap 'fuser -k "${BUILD_OLLAMA_PORT}/tcp" 2>/dev/null || true; kill "${OLLAMA_PID}" 2>/dev/null || true; wait "${OLLAMA_PID}" 2>/dev/null || true' EXIT
 
 echo "Esperando a que Ollama (build-time, ${OLLAMA_HOST}) esté listo..."
 for _ in $(seq 1 60); do
@@ -44,4 +74,4 @@ done
 curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null
 
 echo "Pull de ${MODEL_TAG} (no-op de red si ya está en cache)..."
-su ollama -s /bin/sh -c "OLLAMA_HOST=${OLLAMA_HOST} ollama pull '${MODEL_TAG}'"
+su ollama -s /bin/sh -c "OLLAMA_HOST=$(printf '%q' "${OLLAMA_HOST}") ollama pull $(printf '%q' "${MODEL_TAG}")"

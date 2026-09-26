@@ -61,6 +61,22 @@ SRC_DIR="$(mktemp -d)"
 git clone --branch v0.2.1 --depth 1 https://github.com/cage-kiosk/cage.git "${SRC_DIR}"
 cd "${SRC_DIR}"
 
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-A1): "--branch
+# v0.2.1" pinea un TAG, que es mutable -- una cuenta comprometida (o un
+# force-push accidental) podría mover el tag a otro contenido, y este
+# hook compilaría e instalaría como root lo que sea que haya ahí sin
+# darse cuenta. Verificar el commit real contra el SHA que se resolvió
+# a mano al escribir este hook (git ls-remote
+# https://github.com/cage-kiosk/cage.git refs/tags/v0.2.1^{}) cierra
+# esa ventana: si el tag apunta a otra cosa, esto aborta el build en
+# vez de compilar contenido no verificado.
+CAGE_EXPECTED_COMMIT="f9626f79519f8ee22d7bb0c3880a66791d82f923"
+actual_commit="$(git rev-parse HEAD)"
+if [ "${actual_commit}" != "${CAGE_EXPECTED_COMMIT}" ]; then
+    echo "cage v0.2.1 no apunta al commit esperado -- esperado ${CAGE_EXPECTED_COMMIT}, obtuve ${actual_commit}. Abortando (el tag pudo haberse movido -- revisar a mano antes de re-pinear)." >&2
+    exit 1
+fi
+
 sed -i "s/^have_xwayland = .*/have_xwayland = false/" meson.build
 grep -qx 'have_xwayland = false' meson.build
 
