@@ -29,9 +29,9 @@ fi
 
 python3 -m venv /opt/kal-in/.venv
 /opt/kal-in/.venv/bin/pip install --no-cache-dir --upgrade pip
-/opt/kal-in/.venv/bin/pip install --no-cache-dir \
-    -r /opt/kal-in/requirements-core.txt \
-    -r /opt/kal-in/requirements-dev.txt
+# Mismo motivo que 0300-install-kal.chroot (auditoría 2026-09-26, B-A2):
+# kal-in.lock.txt fija versión+hash de cada dependencia de terceros.
+/opt/kal-in/.venv/bin/pip install --no-cache-dir --require-hashes -r /opt/kal-in/kal-in.lock.txt
 
 # data/ (memoria, admin_token, claves de firma) tiene que ser escribible
 # en runtime por el usuario "kal-in" — en el live system esto vive en la

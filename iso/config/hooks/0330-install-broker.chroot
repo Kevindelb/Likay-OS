@@ -15,7 +15,26 @@ fi
 
 python3 -m venv /opt/likay-broker/.venv
 /opt/likay-broker/.venv/bin/pip install --no-cache-dir --upgrade pip
-/opt/likay-broker/.venv/bin/pip install --no-cache-dir -e /opt/likay-broker
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-A2): antes de
+# este fix, "pip install -e ." resolvía pyyaml/jsonschema (y sus
+# transitivas) sin hashes ni versiones fijas -- una release maliciosa
+# de cualquiera de esas dependencias, publicada entre un build y el
+# siguiente, quedaba horneada e importada en runtime sin que nada lo
+# notara. requirements-broker.lock.txt (generado con
+# "uv pip compile broker/pyproject.toml --generate-hashes") fija
+# versión Y hash de cada dependencia de terceros -- --require-hashes
+# rechaza instalar cualquier paquete que no matchee exactamente.
+#
+# --require-hashes es incompatible con "-e" (un install editable no
+# tiene un hash posible, es una ruta local) -- por eso las
+# dependencias de terceros y el propio paquete se instalan en dos
+# pasos separados: primero las hasheadas, después likay-broker mismo
+# (código de este repo, ya confiable por estar en el árbol de fuentes
+# que se audita/revisa -- el hash-pinning importa para la cadena de
+# suministro DE TERCEROS, no para el propio código).
+/opt/likay-broker/.venv/bin/pip install --no-cache-dir --require-hashes \
+    -r /opt/likay-broker/requirements-broker.lock.txt
+/opt/likay-broker/.venv/bin/pip install --no-cache-dir --no-deps /opt/likay-broker
 
 # policy.json y audit.log viven fuera de /opt/likay-broker a propósito
 # (/var/lib, /var/log -- convención estándar de estado runtime vs.

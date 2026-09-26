@@ -71,6 +71,16 @@ rsync -a --delete \
     --exclude='tests' \
     --exclude='vscode-extension' \
     "${REPO_ROOT}/vendor/kal/" "${INCLUDES_KAL_DIR}/"
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-A2): pip-locks/
+# fija versión+hash de cada dependencia de terceros que 0300-install-kal.chroot
+# instala -- generado con "uv pip compile vendor/kal/requirements-core.txt
+# vendor/kal/requirements-dev.txt --generate-hashes". requirements-core.txt/
+# requirements-dev.txt son del submódulo (lo que kal PIDE); este lock es
+# responsabilidad del build de Likay-OS (lo que Likay-OS realmente
+# instala) -- se regenera a mano cuando kal cambia sus requirements, no
+# automáticamente en cada build (mismo criterio que un lockfile común:
+# reproducible hasta que alguien decide actualizarlo).
+cp "${REPO_ROOT}/iso/pip-locks/kal.lock.txt" "${INCLUDES_KAL_DIR}/kal.lock.txt"
 
 # vendor/kal-in: prototipo de validación del pipeline de boot (issue
 # #2, Fase 1 — kal-in a mano). Ningún agente va horneado en el diseño
@@ -106,6 +116,8 @@ else
         --exclude='tests' \
         --exclude='vscode-extension' \
         "${REPO_ROOT}/vendor/kal-in/" "${INCLUDES_KAL_IN_DIR}/"
+    # Mismo motivo que kal.lock.txt arriba (auditoría 2026-09-26, B-A2).
+    cp "${REPO_ROOT}/iso/pip-locks/kal-in.lock.txt" "${INCLUDES_KAL_IN_DIR}/kal-in.lock.txt"
 fi
 
 # vendor/calamares-settings-debian: base vendorizada para el instalador

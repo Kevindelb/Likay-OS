@@ -5,7 +5,36 @@
 # servicio "ollama" (home /usr/share/ollama) y el systemd unit.
 set -euo pipefail
 
-curl -fsSL https://ollama.com/install.sh | sh
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-C1): antes de
+# este fix, "curl | sh" bajaba SIEMPRE el script y la ÚLTIMA release al
+# momento del build, sin pin ni verificación de integridad -- un
+# compromiso/MITM del endpoint (o de la CDN que lo sirve) se traducía
+# en RCE como root en la máquina de build, horneado directo en el
+# squashfs de cada ISO nueva. Ahora: (1) el script se descarga a un
+# archivo y se verifica su sha256 contra un valor pineado ANTES de
+# ejecutarlo -- nunca se ejecuta bajo la sola garantía de TLS; (2) se
+# fija OLLAMA_VERSION a una release concreta (mecanismo real y
+# soportado por el propio script -- ver su uso de "${OLLAMA_VERSION:+?
+# version=$OLLAMA_VERSION}" para construir la URL de descarga del
+# binario), en vez de instalar siempre lo último disponible ese día.
+#
+# Subir de versión es un cambio deliberado: bajar de nuevo
+# ollama.com/install.sh, confirmar su sha256 a mano, y actualizar AMBOS
+# valores acá -- nunca aflojar la verificación para "que ande".
+OLLAMA_VERSION="0.34.4"
+OLLAMA_INSTALL_SH_SHA256="25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f"
+
+ollama_install_script="$(mktemp)"
+trap 'rm -f "${ollama_install_script}"' EXIT
+curl -fsSL https://ollama.com/install.sh -o "${ollama_install_script}"
+
+actual_sha256="$(sha256sum "${ollama_install_script}" | cut -d' ' -f1)"
+if [ "${actual_sha256}" != "${OLLAMA_INSTALL_SH_SHA256}" ]; then
+    echo "install.sh de Ollama no coincide con el sha256 pineado -- esperado ${OLLAMA_INSTALL_SH_SHA256}, obtuve ${actual_sha256}. Abortando (posible compromiso del endpoint, o una nueva versión legítima del script que hay que revisar y re-pinear a mano)." >&2
+    exit 1
+fi
+
+OLLAMA_VERSION="${OLLAMA_VERSION}" sh "${ollama_install_script}"
 
 # auto/build (host) ya sembró /usr/share/ollama/.ollama/models con lo que
 # hubiera en iso/model-cache/ ANTES de que este hook corriera — en ese
