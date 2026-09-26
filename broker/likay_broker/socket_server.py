@@ -144,7 +144,7 @@ class BrokerServer:
     def _handle_connection_locked(self, conn: socket.socket) -> None:
         with conn:
             try:
-                pid, uid, gid = _peer_credentials(conn)
+                _pid, uid, _gid = _peer_credentials(conn)
             except OSError:
                 return  # conexión murió antes de poder leer las credenciales
 

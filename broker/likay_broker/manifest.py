@@ -191,13 +191,16 @@ def _validate_sandbox_capability_coherence(raw: dict[str, Any]) -> None:
             "capabilities, o bajá sandbox.network a 'none'."
         )
 
-    if sandbox.get("devices") == "explicit" and sandbox.get("device_allow"):
-        if not (capabilities & _DEVICE_RELATED_CAPABILITIES):
-            raise ManifestError(
-                "sandbox.devices: explicit con device_allow no vacío otorga acceso "
-                "a dispositivos del host, pero capabilities no declara ninguna "
-                f"capacidad de dispositivo ({', '.join(sorted(_DEVICE_RELATED_CAPABILITIES))}) "
-                "-- el usuario nunca aprobaría algo que ni siquiera ve declarado."
+    if (
+        sandbox.get("devices") == "explicit"
+        and sandbox.get("device_allow")
+        and not (capabilities & _DEVICE_RELATED_CAPABILITIES)
+    ):
+        raise ManifestError(
+            "sandbox.devices: explicit con device_allow no vacío otorga acceso "
+            "a dispositivos del host, pero capabilities no declara ninguna "
+            f"capacidad de dispositivo ({', '.join(sorted(_DEVICE_RELATED_CAPABILITIES))}) "
+            "-- el usuario nunca aprobaría algo que ni siquiera ve declarado."
             )
 
 
@@ -236,7 +239,7 @@ def validate_requirements_path(bundle_src_dir: Path, requirements_file: str) -> 
     -- el schema por sí solo (regex "not contains ..") ayuda pero no
     alcanza contra symlinks, por eso se revalida acá con paths reales.
     """
-    if requirements_file.startswith("/") or requirements_file.startswith("~"):
+    if requirements_file.startswith(("/", "~")):
         raise ManifestError(f"requirements_file no puede ser una ruta absoluta: {requirements_file!r}")
 
     candidate = (bundle_src_dir / requirements_file).resolve()

@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from likay_broker.audit import AuditLog
-from likay_broker.client import BrokerClientError, check_capability, register_policy, unregister_policy
+from likay_broker.client import (
+    BrokerClientError,
+    check_capability,
+    register_policy,
+    unregister_policy,
+)
 from likay_broker.policy_store import AgentGrant, PolicyStore
 from likay_broker.socket_server import BrokerServer
 

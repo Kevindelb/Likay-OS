@@ -147,6 +147,19 @@ Cada agente se identifica con un `id` único, estilo reverse-DNS
 usuario Unix dedicado (`agent-<id-corto>`), el nombre de la unidad
 systemd (`likay-agent-<id-corto>.service`), y el prefijo de auditoría.
 
+**`id-corto` es colisión-resistente por diseño (hallazgo I-2, auditoría
+de seguridad 2026-09-26).** No es simplemente el último componente del
+`id` completo (`com.likay.kal-in` → `kal-in`) — dos `agent.id` DISTINTOS
+que comparten ese último componente (o cuya forma "puntos→guiones"
+coincide, p.ej. `com.likay.kal-in` vs. `com.likay-kal.in`) derivarían el
+MISMO usuario/unidad/storage/grant del Broker, permitiendo que un
+bundle malicioso suplantara a un agente ya instalado. `id-corto` es en
+cambio `<último-componente-truncado>-<sha256(id completo)[:10]>` —
+legible para debug, pero la unicidad real la da el hash sobre el `id`
+completo (`likay_broker.manifest.AgentManifest.short_id`). Reinstalar
+el MISMO `agent.id` sigue derivando el mismo `id-corto`
+(idempotente).
+
 ```yaml
 agent:
   id: com.likay.kal-in
@@ -328,6 +341,28 @@ advertencia de Podman. Por el mismo motivo, el Quadlet generado
 explícito: el contenedor, cuando arranca de verdad vía systemd
 (`activate_agent`), necesita exactamente la misma delegación.
 
+**Asimetría deliberada de hardening en `[Service]` — hallazgo I-7,
+auditoría de seguridad 2026-09-26, cerrado parcialmente a propósito.**
+El runtime Python recibe `_SANDBOX_BASE_DIRECTIVES` completo en su
+`[Service]`; el Quadlet OCI, por el motivo de arriba, NO puede recibir
+el mismo conjunto sin arriesgar romper exactamente lo que costó más
+tiempo de Fase C:
+- `NoNewPrivileges=yes` rompería `newuidmap`/`newgidmap` (binarios
+  setuid que Podman rootless invoca para escribir el mapeo
+  subuid/subgid).
+- `ProtectControlGroups=yes` entra en conflicto directo con
+  `Delegate=yes` (systemd.exec(5) documenta la combinación como
+  contradictoria: uno le da a la unidad control de su propio subárbol
+  de cgroup, el otro se lo deja de solo lectura).
+- `SystemCallFilter=@system-service` no tiene confirmado que cubra los
+  syscalls de namespaces (`unshare`/`clone3`/`setns`) que Podman
+  rootless usa.
+
+El Quadlet OCI sí recibe el subconjunto que no toca ninguno de esos
+mecanismos: `LockPersonality=yes` y `RestrictSUIDSGID=yes` (además de
+`Delegate=yes`, ya explicado). Ver el comentario largo en
+`_quadlet_unit_text()` del helper para el detalle completo.
+
 `activate_agent` también despacha por `runtime_type`: una unidad
 generada por Quadlet no puede `systemctl enable`arse (falla con "Unit
 ... is transient or generated") — se activa con `systemctl start`
@@ -486,7 +521,12 @@ sandbox, no una capa genérica por encima de las dos.
   en la storage rootless del propio usuario del agente (`podman secret
   create <id> <archivo>`, corrido como ese usuario vía el mismo
   mecanismo `needs_userns`/`Delegate=yes` que ya usa `load_oci_image`).
-  El Quadlet generado referencia el secret por nombre:
+  Idempotente ante reinstalación (hallazgo V-1, auditoría de seguridad
+  2026-09-26): `podman secret create` fallaba con "already exists" si
+  el mismo `secret_id` ya existía (reinstalar el mismo agente, o
+  reintentar cargar el secret) — `set_secret` ahora hace un
+  `podman secret rm` best-effort primero (ignora el error si no
+  existía). El Quadlet generado referencia el secret por nombre:
   `Secret=<id>,type=env,target=<id>` — el valor nunca pasa por
   `Image=`/`Environment=` del `.container`, ni queda visible vía
   `podman inspect` o `systemctl cat`.
@@ -529,7 +569,10 @@ real de dominios necesitaría eBPF (hay un prototipo sin usar en
 los dos implementado.
 
 **Mapeo campo del manifiesto → directivas systemd concretas (runtime
-Python; runtime OCI vía Quadlet mapea igual conceptualmente, Fase C):**
+Python; runtime OCI vía Quadlet mapea el campo `sandbox:` igual
+conceptualmente, Fase C — la fila "siempre, todo agente" de abajo es la
+excepción: el Quadlet OCI solo recibe el subconjunto seguro para Podman
+rootless, ver la nota de I-7 más arriba):**
 
 | Campo | Directivas |
 |---|---|
@@ -544,11 +587,32 @@ Python; runtime OCI vía Quadlet mapea igual conceptualmente, Fase C):**
 **`device_allow` está restringido igual que `env`** (mismo hallazgo
 2026-09-17): `_systemd_unit_text` interpola `DeviceAllow={entry}` crudo
 también, así que un valor con `\n` embebido era el mismo vector de
-inyección que `env`, solo que más silencioso — la TUI nunca muestra el
-`sandbox:` del manifiesto al usuario, solo `id`/puerto/cantidad de
-capacidades. El schema prohíbe CR/LF pero permite el espacio interno
-que la sintaxis real de `DeviceAllow=` necesita (`<device> <permisos>`,
-p.ej. `/dev/sda5 rwm`).
+inyección que `env`. El schema prohíbe CR/LF pero permite el espacio
+interno que la sintaxis real de `DeviceAllow=` necesita
+(`<device> <permisos>`, p.ej. `/dev/sda5 rwm`).
+
+**Coherencia entre `sandbox:` y `capabilities:` — hallazgo I-3, auditoría
+de seguridad 2026-09-26, ya cerrado.** Hasta esa fecha, la aprobación de
+capacidades que el usuario ve en la TUI no gobernaba el sandbox real: un
+manifiesto con `capabilities: []` podía igual traer
+`sandbox.network: host-egress` (acceso a la red del host) o
+`sandbox.devices: explicit` con `device_allow` apuntando a hardware
+concreto, sin que nada de eso se mostrara ni se aprobara. Dos cambios lo
+cierran:
+
+1. `parse_manifest_text` (`likay_broker/manifest.py`,
+   `_validate_sandbox_capability_coherence`) rechaza el manifiesto si
+   `sandbox.network: host-egress` aparece sin `network.egress` en
+   `capabilities`, o si `sandbox.devices: explicit` con `device_allow`
+   no vacío aparece sin ninguna capacidad de dispositivo
+   (`disk.read`/`disk.write`/`gpu.compute`/`audio.microphone`/
+   `audio.speaker`/`camera`) — corre en el mismo punto por el que pasan
+   TANTO la TUI (para mostrar) COMO el helper (para instalar), así que
+   ningún manifiesto incoherente llega a generar una unidad real.
+2. La TUI (`agent-install-launcher`) muestra ahora una pantalla propia
+   con el `sandbox:` real (filesystem/network/devices/device_allow/
+   límites de recursos) ANTES de la aprobación de capacidades, no solo
+   `id`/puerto/cantidad de capacidades.
 
 ## 8. Lifecycle operativo
 
@@ -630,6 +694,19 @@ concurrentes (`hash_ok=True, chain_ok=False`, ya cubierta por el
 No es criptográficamente inviolable — para eso haría falta firma
 externa o almacenamiento WORM real — pero hace la manipulación
 evidente en vez de silenciosa.
+
+**Verificación real, no solo posible — hallazgo I-5, auditoría de
+seguridad 2026-09-26, cerrado.** Hasta esa fecha, `verify_chain()`/
+`diagnose_chain()` existían desde el diseño original pero ningún
+componente del sistema instalado las llamaba — solo tenían callers en
+los tests, así que la propiedad de "manipulación evidente" de arriba
+quedaba dormida en la práctica. `likay-agent-broker-verify.timer`
+(diario) corre `python -m likay_broker verify-audit`
+(`likay_broker/__main__.py`, `_verify_audit()`), que sale con código 1
+si la cadena está rota — visible en `systemctl --failed` y
+`journalctl`, no en silencio. El archivo del log también pasó a quedar
+`0640` (antes `0644` por el umask de systemd) — legible solo por
+`likay-broker` y `root`, no por cualquier usuario local.
 
 ## 11. Agente #0 — el instalador, como ejemplo ya resuelto
 

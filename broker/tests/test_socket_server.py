@@ -19,8 +19,6 @@ import threading
 import time
 from pathlib import Path
 
-import pytest
-
 from likay_broker import protocol
 from likay_broker.audit import AuditLog
 from likay_broker.policy_store import AgentGrant, PolicyStore
