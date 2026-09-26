@@ -94,6 +94,27 @@ se probaron y contienen hoy (lectura de archivos fuera del área
 concedida, escalada de privilegios, dispositivos crudos, puertos
 privilegiados).
 
+**Esta razón (single-tenant) tiene fecha de vencimiento — corrección
+explícita del usuario (2026-09-26).** El razonamiento de arriba vale
+para el V1 de hoy, pero la filosofía local-first no significa
+"single-user para siempre": cuando el producto salga al mercado tiene
+que estar preparado para modelos en la nube (ya lo está — `runtime.env`
+no le impone al agente usar el LLM propio de Likay-OS) y, más
+importante acá, para **una posible red de usuarios y multiagentes**.
+En cuanto exista más de un agente activo compartiendo la misma máquina
+(así sea del mismo dueño) o infraestructura compartida entre usuarios
+distintos, el argumento "el peor caso es que el dueño se compromete a
+sí mismo" deja de aplicar tal cual — un agente que escapa deja de
+amenazar solo a su propio dueño, empieza a amenazar a OTRO agente (o a
+otro usuario) en la misma infraestructura. Eso es, en los hechos, el
+mismo perfil de riesgo que justifica una VM por sandbox en E2B/Modal.
+**No es un cambio para V1** (que sigue siendo un agente a la vez, una
+sola persona, decisión de alcance ya tomada), pero significa que "el
+techo de aislamiento actual alcanza" deja de ser cierto ANTES de
+multiagentes/red de usuarios, no después — revisar esta decisión tiene
+que ser parte explícita de diseñar esas dos capacidades, no algo para
+notar recién cuando ya estén construidas.
+
 **Camino conocido para subir el techo, si hace falta más adelante:**
 `gVisor` (`runsc`) es un runtime OCI más — compatible con Podman/Quadlet
 sin rediseñar la arquitectura del Sandbox Adapter (Fase C), sube el
