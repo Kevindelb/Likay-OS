@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from likay_broker.manifest import ManifestError, parse_manifest_text, validate_requirements_path
+from likay_broker.manifest import (
+    ManifestError,
+    parse_manifest_file,
+    parse_manifest_text,
+    validate_requirements_path,
+)
 
 VALID_KAL_IN_MANIFEST = textwrap.dedent(
     """\
@@ -338,3 +343,38 @@ class TestValidateRequirementsPath:
         src.mkdir()
         with pytest.raises(ManifestError, match="no existe"):
             validate_requirements_path(src, "requirements.txt")
+
+
+class TestParseManifestFile:
+    """
+    Auditoría de seguridad 2026-09-26: el docstring de parse_manifest_file
+    prometía "no sigue el archivo si es un symlink que escapa", pero el
+    código usaba path.resolve() (que SÍ sigue symlinks) -- promesa sin
+    implementación. Un manifiesto legítimo es siempre un archivo regular
+    dentro del staging root-owned.
+    """
+
+    def test_accepts_regular_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "agent.yaml"
+        path.write_text(VALID_KAL_IN_MANIFEST)
+
+        assert parse_manifest_file(path).agent_id == "com.likay.kal-in"
+
+    def test_rejects_symlinked_manifest(self, tmp_path: Path) -> None:
+        real = tmp_path / "real.yaml"
+        real.write_text(VALID_KAL_IN_MANIFEST)
+        link = tmp_path / "agent.yaml"
+        link.symlink_to(real)
+
+        with pytest.raises(ManifestError, match="symlink"):
+            parse_manifest_file(link)
+
+    def test_rejects_symlink_even_if_target_is_valid(self, tmp_path: Path) -> None:
+        """Seguir el enlace permitiría apuntar a cualquier archivo del sistema."""
+        outside = tmp_path / "outside.yaml"
+        outside.write_text(VALID_KAL_IN_MANIFEST)
+        link = tmp_path / "agent.yaml"
+        link.symlink_to(outside)
+
+        with pytest.raises(ManifestError, match="symlink"):
+            parse_manifest_file(link)

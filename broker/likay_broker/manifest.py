@@ -121,15 +121,23 @@ def parse_manifest_file(path: Path) -> AgentManifest:
     """
     Lee y valida un agent.yaml desde disco.
 
-    No sigue el archivo si es un symlink que escapa de su propio
-    directorio -- lo mismo que se exige para requirements_file (ver
-    validate_requirements_path) aplica acá: nunca confiar en que un
-    bundle de terceros se porte bien.
+    Rechaza explícitamente el manifiesto si es un symlink. La versión
+    anterior documentaba esta protección ("no sigue el archivo si es un
+    symlink que escapa de su propio directorio") pero no la implementaba:
+    `path.resolve()` SÍ sigue symlinks, así que el docstring prometía algo
+    que el código no hacía (auditoría de seguridad 2026-09-26). Un
+    manifiesto legítimo es siempre un archivo regular dentro del staging
+    root-owned, así que el rechazo es fail-closed y no rompe ningún caso
+    real.
     """
-    resolved = path.resolve()
-    if not resolved.is_file():
+    if path.is_symlink():
+        raise ManifestError(
+            f"El manifiesto {path} es un symlink -- un bundle de terceros no se "
+            "considera confiable, y seguirlo permitiría leer otro archivo del sistema."
+        )
+    if not path.is_file():
         raise ManifestError(f"No existe el manifiesto en {path}")
-    return parse_manifest_text(resolved.read_text(encoding="utf-8"))
+    return parse_manifest_text(path.read_text(encoding="utf-8"))
 
 
 def validate_requirements_path(bundle_src_dir: Path, requirements_file: str) -> Path:
