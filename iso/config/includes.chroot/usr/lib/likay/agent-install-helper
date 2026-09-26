@@ -29,6 +29,7 @@ import json
 import os
 import pwd
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -265,6 +266,42 @@ def _load_manifest_for_operation() -> AgentManifest:
         raise HelperError(f"manifiesto inválido: {exc}") from exc
 
 
+def _reject_unsafe_bundle_entries(root: Path) -> None:
+    """
+    Rechaza el bundle entero si contiene cualquier symlink o archivo
+    especial (FIFO, dispositivo, socket) antes de copiar un solo byte.
+
+    Hallazgo real de la auditoría de seguridad (2026-09-26): este helper
+    corre como root (pkexec), y `shutil.copytree(..., symlinks=False)`
+    SEGUÍA los symlinks -- copiaba el CONTENIDO del destino, y si el
+    enlace apuntaba a un directorio recursaba dentro. Un bundle hostil
+    con `src/leak -> /etc/shadow` hacía que root materializara el archivo
+    dentro del `src/` del agente (que después lo lee su propio código,
+    salteando su sandbox de systemd), y `src/x -> /dev/zero` copiaba sin
+    límite hasta agotar el disco. Ninguna opción de montaje del USB
+    (`ro,nosuid,nodev,noexec`) impide que el kernel resuelva un symlink
+    al copiar: la única defensa es no copiar nunca un enlace.
+
+    Un bundle legítimo de este contrato (código fuente + un
+    requirements_file) nunca necesita symlinks ni archivos especiales,
+    así que el rechazo es fail-closed y no rompe ningún caso real.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in list(dirnames) + filenames:
+            entry = Path(dirpath) / name
+            relative = entry.relative_to(root)
+            if entry.is_symlink():
+                raise HelperError(
+                    f"el bundle contiene un symlink ({relative}) -- no se acepta: "
+                    "copiarlo como root permitiría leer archivos arbitrarios del sistema"
+                )
+            entry_stat = entry.lstat()
+            if not (stat.S_ISDIR(entry_stat.st_mode) or stat.S_ISREG(entry_stat.st_mode)):
+                raise HelperError(
+                    f"el bundle contiene un archivo especial ({relative}) -- no se acepta"
+                )
+
+
 def op_mount_bundle() -> dict:
     LIKAY_AGENT_MOUNT.mkdir(parents=True, exist_ok=True)
     likay_agent_dev = Path("/dev/disk/by-label/likay-agent")
@@ -298,6 +335,11 @@ def op_mount_bundle() -> dict:
     if not usb_manifest_path.is_file():
         raise HelperError(f"{usb_manifest_path} no existe en el medio montado")
 
+    # Rechazo fail-closed de symlinks/archivos especiales ANTES de tocar
+    # nada -- ver el docstring de _reject_unsafe_bundle_entries (hallazgo
+    # de la auditoría 2026-09-26: copytree(symlinks=False) como root).
+    _reject_unsafe_bundle_entries(USB_BUNDLE_MOUNT)
+
     # Copia a staging root-owned de una sola vez -- ver el comentario
     # largo junto a BUNDLE_STAGING (TOCTOU). Todo lo que sigue
     # (validate_manifest, create_agent, install_bundle, generate_unit,
@@ -307,7 +349,11 @@ def op_mount_bundle() -> dict:
     BUNDLE_STAGING.mkdir(parents=True, mode=0o700)
     shutil.copy2(usb_manifest_path, MANIFEST_PATH)
     if usb_src_dir.is_dir():
-        shutil.copytree(usb_src_dir, BUNDLE_SRC_DIR, symlinks=False)
+        # symlinks=True es defensa en profundidad: _reject_unsafe_bundle_entries
+        # ya garantizó que no queda ningún enlace, pero si alguna vez se
+        # relajara esa validación, esto preserva el enlace en vez de
+        # materializar su destino como root.
+        shutil.copytree(usb_src_dir, BUNDLE_SRC_DIR, symlinks=True)
     else:
         BUNDLE_SRC_DIR.mkdir()
     # image.tar (runtime.type: oci, ver BUNDLE_IMAGE_PATH) es opcional
@@ -556,7 +602,11 @@ def op_install_bundle() -> dict:
 
     if paths["src"].exists():
         shutil.rmtree(paths["src"])
-    shutil.copytree(BUNDLE_SRC_DIR, paths["src"], symlinks=False)
+    # symlinks=True: el staging ya pasó por _reject_unsafe_bundle_entries
+    # (no puede contener enlaces), pero copiar preservando symlinks en vez
+    # de seguirlos es la política correcta en cualquier copia que corra
+    # como root -- ver el docstring de esa función.
+    shutil.copytree(BUNDLE_SRC_DIR, paths["src"], symlinks=True)
     # chown ACÁ, antes de crear el venv/correr pip como este usuario --
     # shutil.copytree corrió como root (el propio proceso), así que
     # src/ y su contenido quedan root:root pese a que paths["base"] ya
@@ -768,7 +818,11 @@ def _systemd_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     port = runtime.get("port")
     command = python_runtime.get("command", "")
     entry_point = python_runtime.get("entry_point", "")
-    exec_start = f"{paths['venv']}/bin/{command} {entry_point} --host 127.0.0.1 --port {port}"
+    # `port` es opcional en el schema -- sin este guard, un manifiesto sin
+    # puerto generaba "ExecStart=... --port None" (auditoría 2026-09-26).
+    exec_start = f"{paths['venv']}/bin/{command} {entry_point} --host 127.0.0.1"
+    if port is not None:
+        exec_start += f" --port {port}"
 
     env_lines = "\n".join(
         f"Environment={k}={v}" for k, v in runtime.get("env", {}).items()

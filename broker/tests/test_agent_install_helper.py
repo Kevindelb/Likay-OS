@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -475,3 +476,145 @@ class TestSetSecretGuards:
         monkeypatch.setattr(helper.pwd, "getpwnam", _no_such_user)
         with pytest.raises(helper.HelperError, match="create_agent primero"):
             helper.op_set_secret()
+
+
+class TestBundleTreeRejection:
+    """
+    Auditoría de seguridad 2026-09-26: mount_bundle corría
+    `shutil.copytree(..., symlinks=False)` COMO ROOT (pkexec), y eso
+    SEGUÍA los symlinks del bundle -- copiaba el CONTENIDO del destino
+    (p.ej. /etc/shadow) dentro del src/ del agente, que después lo lee su
+    propio código salteando su sandbox, y un enlace a /dev/zero copiaba
+    sin límite hasta agotar el disco. `_reject_unsafe_bundle_entries` es
+    el rechazo fail-closed que corre antes de copiar un solo byte.
+    """
+
+    def test_accepts_plain_tree(self, helper, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "app.py").write_text("print('hola')\n")
+        (src / "requirements.txt").write_text("fastapi\n")
+        (tmp_path / "agent.yaml").write_text("schema_version: 2\n")
+
+        helper._reject_unsafe_bundle_entries(tmp_path)  # no levanta
+
+    def test_rejects_symlink_to_file(self, helper, tmp_path: Path) -> None:
+        outside = tmp_path / "outside.txt"
+        outside.write_text("contenido sensible\n")
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "leak.txt").symlink_to(outside)
+
+        with pytest.raises(helper.HelperError, match="symlink"):
+            helper._reject_unsafe_bundle_entries(tmp_path)
+
+    def test_rejects_symlink_to_directory(self, helper, tmp_path: Path) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secreto").write_text("x\n")
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "etcdir").symlink_to(outside)
+
+        with pytest.raises(helper.HelperError, match="symlink"):
+            helper._reject_unsafe_bundle_entries(tmp_path)
+
+    def test_rejects_symlinked_manifest(self, helper, tmp_path: Path) -> None:
+        real = tmp_path / "real.yaml"
+        real.write_text("schema_version: 2\n")
+        (tmp_path / "agent.yaml").symlink_to(real)
+
+        with pytest.raises(helper.HelperError, match="symlink"):
+            helper._reject_unsafe_bundle_entries(tmp_path)
+
+    def test_rejects_special_file(self, helper, tmp_path: Path) -> None:
+        src = tmp_path / "src"
+        src.mkdir()
+        os.mkfifo(src / "pipe")
+
+        with pytest.raises(helper.HelperError, match="especial"):
+            helper._reject_unsafe_bundle_entries(tmp_path)
+
+    def test_mount_bundle_wires_the_rejection_and_preserves_symlinks(self, helper) -> None:
+        """
+        La función pura no alcanza si nadie la llama: mount_bundle (root)
+        tiene que rechazar ANTES de copiar, y ninguna de las dos copias
+        puede volver a seguir symlinks. Mismo estilo de aserción sobre el
+        fuente que usa test_deployment_ownership con el hook de build.
+        """
+        import inspect
+
+        mount_source = inspect.getsource(helper.op_mount_bundle)
+        assert "_reject_unsafe_bundle_entries(USB_BUNDLE_MOUNT)" in mount_source
+        assert "shutil.copytree(usb_src_dir, BUNDLE_SRC_DIR, symlinks=True)" in mount_source
+
+        install_source = inspect.getsource(helper.op_install_bundle)
+        assert 'shutil.copytree(BUNDLE_SRC_DIR, paths["src"], symlinks=True)' in install_source
+
+    def test_op_mount_bundle_rejects_hostile_bundle_before_copying(
+        self, helper, tmp_path: Path, monkeypatch
+    ) -> None:
+        """
+        Integración real de la operación (no solo la función pura): con un
+        USB simulado que trae `src/leak.txt -> /etc/hostname`, la
+        operación falla ANTES de copiar un solo byte al staging.
+        """
+        real_path = helper.Path
+
+        # /dev/disk/by-label/* no existe en el entorno de test: se
+        # redirige solo ese prefijo a un directorio temporal con las dos
+        # entradas que op_mount_bundle espera encontrar.
+        by_label = tmp_path / "by-label"
+        by_label.mkdir()
+        (by_label / "likay-agent").write_text("")
+        (by_label / "LIKAY-BUNDLE").mkdir()
+
+        def _fake_path(arg):
+            text = str(arg)
+            if text.startswith("/dev/disk/by-label/"):
+                return real_path(by_label / real_path(text).name)
+            return real_path(arg)
+
+        monkeypatch.setattr(helper, "Path", _fake_path)
+        monkeypatch.setattr(helper.os.path, "ismount", lambda _path: True)
+        monkeypatch.setattr(helper, "_run", lambda *args, **kwargs: None)
+
+        usb = tmp_path / "usb"
+        (usb / "src").mkdir(parents=True)
+        (usb / "agent.yaml").write_text("schema_version: 2\n")
+        (usb / "src" / "leak.txt").symlink_to("/etc/hostname")
+
+        staging = tmp_path / "staging"
+        monkeypatch.setattr(helper, "LIKAY_AGENT_MOUNT", real_path(tmp_path / "agent-mount"))
+        monkeypatch.setattr(helper, "USB_BUNDLE_MOUNT", real_path(usb))
+        monkeypatch.setattr(helper, "BUNDLE_STAGING", real_path(staging))
+        monkeypatch.setattr(helper, "MANIFEST_PATH", real_path(staging / "agent.yaml"))
+        monkeypatch.setattr(helper, "BUNDLE_SRC_DIR", real_path(staging / "src"))
+        monkeypatch.setattr(helper, "BUNDLE_IMAGE_PATH", real_path(staging / "image.tar"))
+
+        with pytest.raises(helper.HelperError, match="symlink"):
+            helper.op_mount_bundle()
+
+        assert not (staging / "agent.yaml").exists()
+        assert not (staging / "src").exists()
+
+
+class TestExecStartOptionalPort:
+    """`port` es opcional en el schema -- auditoría 2026-09-26."""
+
+    def test_port_present_is_preserved(self, helper) -> None:
+        manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+
+        exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+        assert "--host 127.0.0.1 --port 8000" in exec_line
+
+    def test_absent_port_does_not_render_None(self, helper) -> None:
+        runtime = {"type": "python", "python": _DEFAULT_RUNTIME["python"]}
+        manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"}, runtime=runtime)
+        unit = helper._systemd_unit_text(manifest, "agent-test-agent")
+
+        exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+        assert "None" not in exec_line
+        assert "--host 127.0.0.1" in exec_line
+        assert "--port" not in exec_line
