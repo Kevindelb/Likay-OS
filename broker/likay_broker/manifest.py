@@ -15,6 +15,7 @@ shell -- yaml.safe_load, no yaml.load ni eval.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -48,8 +49,35 @@ class AgentManifest:
 
     @property
     def short_id(self) -> str:
-        """com.likay.kal-in -> kal-in -- usado para nombres de usuario/unidad."""
-        return self.agent_id.rsplit(".", 1)[-1]
+        """
+        Identificador corto, colisión-resistente, usado para el nombre de
+        usuario Linux/unidad systemd/directorio de storage del agente.
+
+        Hallazgo de la auditoría de seguridad (2026-09-26, I-2): antes de
+        este fix, short_id era literalmente el ÚLTIMO componente de
+        agent.id (p.ej. "com.likay.kal-in" -> "kal-in"). Dos agent.id
+        DISTINTOS que comparten ese último componente (p.ej.
+        "com.likay.kal-in" y "com.evil.kal-in", o incluso
+        "com.likay.kal-in" vs. "com.likay-kal.in", cuya forma
+        "puntos->guiones" también coincidiría) derivaban el MISMO usuario
+        Linux, la MISMA unidad systemd, el MISMO storage y el MISMO grant
+        del Broker -- un bundle malicioso podía suplantar a un agente ya
+        instalado con solo elegir el mismo último componente.
+
+        Ahora se deriva de agent_id COMPLETO: un sufijo hash de 10 chars
+        hex de sha256(agent_id) hace que dos ids distintos no colisionen
+        en la práctica (ni siquiera si su forma sanitizada coincidiera,
+        porque el hash es sobre el string original, no sobre la forma
+        sanitizada). El prefijo humano-legible (último componente,
+        truncado) es solo para que los nombres sigan siendo legibles en
+        `ps`/`systemctl` -- la unicidad real la da el hash. Reinstalar el
+        MISMO agent_id siempre deriva el mismo short_id (idempotente, no
+        rompe el caso de reemplazar/actualizar un agente ya instalado).
+        """
+        digest = hashlib.sha256(self.agent_id.encode("utf-8")).hexdigest()[:10]
+        last_component = self.agent_id.rsplit(".", 1)[-1]
+        human_prefix = re.sub(r"[^a-z0-9-]", "-", last_component)[:12].strip("-") or "agent"
+        return f"{human_prefix}-{digest}"
 
     @property
     def capabilities(self) -> list[str]:

@@ -531,6 +531,20 @@ def op_set_secret() -> dict:
     _run(["chown", f"{linux_user}:{linux_user}", str(secret_path)])
 
     if manifest.runtime.get("type") == "oci":
+        # Hallazgo de la auditoría de seguridad (2026-09-26, V-1): "podman
+        # secret create" falla con "already exists" si el agente se
+        # reinstala (mismo agent_id -> mismo short_id, ver el fix de I-2
+        # en manifest.py) o si simplemente se vuelve a correr set_secret
+        # para el mismo id (reintento tras un valor mal tipeado). Un "rm"
+        # best-effort antes del "create" lo vuelve idempotente sin
+        # depender de que esta versión de Podman soporte "--replace".
+        try:
+            _run(
+                ["podman", "secret", "rm", secret_id],
+                run_as_user=linux_user, needs_userns=True,
+            )
+        except subprocess.CalledProcessError:
+            pass  # no existía todavía -- caso normal en una instalación nueva
         _run(
             ["podman", "secret", "create", secret_id, str(secret_path)],
             run_as_user=linux_user, needs_userns=True,

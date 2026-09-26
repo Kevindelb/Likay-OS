@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import io
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,7 +82,7 @@ class TestSandboxToSystemdMapping:
         assert "ProtectSystem=strict" in unit
         assert "ProtectHome=yes" in unit
         for name in ("config", "state", "workspace", "secrets"):
-            assert f"ReadWritePaths=/mnt/likay-agent/test-agent/{name}" in unit
+            assert f"ReadWritePaths=/mnt/likay-agent/{manifest.short_id}/{name}" in unit
 
     def test_filesystem_none_has_no_read_write_paths(self, helper) -> None:
         manifest = _manifest({"filesystem": "none", "network": "none", "devices": "none"})
@@ -193,10 +195,10 @@ class TestEnvironment:
         manifest = _manifest({"filesystem": "restricted", "network": "none", "devices": "none"})
         unit = helper._systemd_unit_text(manifest, "agent-test-agent")
 
-        assert "Environment=AGENT_CONFIG_DIR=/mnt/likay-agent/test-agent/config" in unit
-        assert "Environment=AGENT_STATE_DIR=/mnt/likay-agent/test-agent/state" in unit
-        assert "Environment=AGENT_WORKSPACE_DIR=/mnt/likay-agent/test-agent/workspace" in unit
-        assert "Environment=AGENT_SECRETS_DIR=/mnt/likay-agent/test-agent/secrets" in unit
+        assert f"Environment=AGENT_CONFIG_DIR=/mnt/likay-agent/{manifest.short_id}/config" in unit
+        assert f"Environment=AGENT_STATE_DIR=/mnt/likay-agent/{manifest.short_id}/state" in unit
+        assert f"Environment=AGENT_WORKSPACE_DIR=/mnt/likay-agent/{manifest.short_id}/workspace" in unit
+        assert f"Environment=AGENT_SECRETS_DIR=/mnt/likay-agent/{manifest.short_id}/secrets" in unit
 
     def test_manifest_env_vars_are_included(self, helper) -> None:
         manifest = _manifest(
@@ -288,7 +290,7 @@ class TestQuadletUnitMapping:
         # contenedor, y un proceso no-root (el "node" de OpenClaw, o
         # cualquier imagen bien comportada) no puede escribir ahí.
         for name in ("config", "state", "workspace", "secrets"):
-            assert f"Volume=/mnt/likay-agent/test-agent/{name}:/var/lib/likay-agent/{name}:Z,U" in unit
+            assert f"Volume=/mnt/likay-agent/{manifest.short_id}/{name}:/var/lib/likay-agent/{name}:Z,U" in unit
 
     def test_filesystem_none_has_no_volumes(self, helper) -> None:
         manifest = _manifest(
@@ -476,6 +478,50 @@ class TestSetSecretGuards:
         monkeypatch.setattr(helper.pwd, "getpwnam", _no_such_user)
         with pytest.raises(helper.HelperError, match="create_agent primero"):
             helper.op_set_secret()
+
+    def test_oci_secret_create_is_idempotent_via_rm_then_create(
+        self, helper, monkeypatch, tmp_path: Path
+    ) -> None:
+        """
+        Hallazgo V-1 (auditoría de seguridad 2026-09-26): "podman secret
+        create" falla con "already exists" al reinstalar el mismo agente
+        (mismo agent_id -> mismo short_id, idempotente desde el fix de
+        I-2) o al reintentar cargar el mismo secret_id. op_set_secret
+        debe intentar "podman secret rm" primero -- ignorando el error si
+        no existía todavía, el caso normal en una instalación nueva --
+        antes de "create", para que la operación sea idempotente.
+        """
+        monkeypatch.setattr(sys, "argv", ["agent-install-helper", "set_secret", "FOO"])
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+            secrets=[{"id": "FOO", "required": True}],
+        )
+        monkeypatch.setattr(helper, "_load_manifest_for_operation", lambda: manifest)
+        monkeypatch.setattr(
+            helper.pwd, "getpwnam",
+            lambda name: SimpleNamespace(pw_uid=1000, pw_gid=1000, pw_dir="/home/x"),
+        )
+        secrets_dir = tmp_path / "secrets"
+        secrets_dir.mkdir()
+        monkeypatch.setattr(helper, "_agent_paths", lambda short_id: {"secrets": secrets_dir})
+        monkeypatch.setattr(sys, "stdin", io.StringIO("shh-secret-value"))
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["podman", "secret", "rm"]:
+                raise helper.subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(helper, "_run", fake_run)
+
+        result = helper.op_set_secret()
+
+        assert result == {"secret_id": "FOO"}
+        podman_calls = [c for c in calls if c[0] == "podman"]
+        assert podman_calls[0][:3] == ["podman", "secret", "rm"]
+        assert podman_calls[1][:3] == ["podman", "secret", "create"]
 
 
 class TestBundleTreeRejection:

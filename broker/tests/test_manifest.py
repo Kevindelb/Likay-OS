@@ -105,11 +105,36 @@ VALID_OPENCLAW_OCI_MANIFEST = textwrap.dedent(
 def test_parses_valid_kal_in_manifest() -> None:
     manifest = parse_manifest_text(VALID_KAL_IN_MANIFEST)
     assert manifest.agent_id == "com.likay.kal-in"
-    assert manifest.short_id == "kal-in"
+    assert manifest.short_id == "kal-in-bfa07e6eba"
     assert "llm.local" in manifest.capabilities
     assert manifest.is_service
     assert manifest.runtime["port"] == 8000
     assert manifest.runtime["type"] == "python"
+
+
+def test_short_id_is_deterministic_for_the_same_agent_id() -> None:
+    """Reinstalar el mismo agente debe derivar siempre el mismo short_id."""
+    a = parse_manifest_text(VALID_KAL_IN_MANIFEST)
+    b = parse_manifest_text(VALID_KAL_IN_MANIFEST)
+    assert a.short_id == b.short_id
+
+
+def test_short_id_does_not_collide_on_shared_last_component() -> None:
+    """
+    Hallazgo I-2 (auditoría 2026-09-26): "com.likay.kal-in" y
+    "com.evil.kal-in" comparten el último componente ("kal-in") -- antes
+    del fix, ambos derivaban el MISMO short_id (y por lo tanto el mismo
+    usuario Linux/unidad/storage/grant). Ahora deben ser distintos.
+    """
+    likay = parse_manifest_text(VALID_KAL_IN_MANIFEST)
+    evil = parse_manifest_text(VALID_KAL_IN_MANIFEST.replace("com.likay.kal-in", "com.evil.kal-in"))
+    assert likay.short_id != evil.short_id
+    # También el caso más sutil: la forma "puntos->guiones" coincide
+    # aunque el agent_id real sea distinto -- el hash igual los separa.
+    dotted_differently = parse_manifest_text(
+        VALID_KAL_IN_MANIFEST.replace("com.likay.kal-in", "com.likay-kal.in")
+    )
+    assert likay.short_id != dotted_differently.short_id
 
 
 def test_installer_manifest_has_no_runtime() -> None:

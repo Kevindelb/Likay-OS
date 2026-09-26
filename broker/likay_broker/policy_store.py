@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,9 @@ class AgentGrant:
     linux_user: str
     capabilities: list[str]
     installed_at: str  # ISO 8601, decidido por el caller (helper/TUI)
+
+
+_GRANT_FIELD_NAMES = {f.name for f in fields(AgentGrant)}
 
 
 class PolicyStore:
@@ -50,7 +53,23 @@ class PolicyStore:
         return data
 
     def load_all(self) -> list[AgentGrant]:
-        return [AgentGrant(**entry) for entry in self._load_raw()]
+        """
+        Hallazgo de la auditoría de seguridad (2026-09-26, V-1): antes de
+        este fix, `AgentGrant(**entry)` reventaba con TypeError ante
+        cualquier clave extra en una entrada de policy.json -- un
+        dataclass no tolera keywords desconocidos. Eso tumbaba TODAS las
+        consultas del Broker (check_capability de cualquier agente), no
+        solo la entrada con la clave de más, ante cualquier evolución
+        futura del schema de grants o una edición manual del archivo.
+        Filtrar a los campos conocidos de AgentGrant es forward-compatible
+        sin perder nada: los campos que este proceso no entiende todavía
+        simplemente se ignoran, en vez de tumbar el Broker entero.
+        """
+        grants = []
+        for entry in self._load_raw():
+            known = {k: v for k, v in entry.items() if k in _GRANT_FIELD_NAMES}
+            grants.append(AgentGrant(**known))
+        return grants
 
     def get_grant(self, *, linux_user: str) -> AgentGrant | None:
         """
@@ -68,9 +87,23 @@ class PolicyStore:
         """
         Reemplaza el grant existente para ese agent_id (reinstalar un
         agente pisa su grant anterior) o lo agrega si es nuevo.
+
+        También descarta cualquier entrada preexistente que comparta
+        linux_user con el grant nuevo, aunque su agent_id sea distinto --
+        defensa en profundidad de I-2 (auditoría 2026-09-26): con el fix
+        de short_id (manifest.py) dos agent_id distintos ya no deberían
+        poder derivar el mismo linux_user, pero get_grant() busca por
+        linux_user y devuelve la PRIMERA coincidencia -- si por cualquier
+        motivo llegaran a coexistir dos grants para el mismo usuario
+        (policy.json editado a mano, un bug futuro), esto garantiza que
+        nunca haya más de uno, en vez de dejar una entrada vieja/ambigua
+        dando vueltas.
         """
         entries = self._load_raw()
-        entries = [e for e in entries if e.get("agent_id") != grant.agent_id]
+        entries = [
+            e for e in entries
+            if e.get("agent_id") != grant.agent_id and e.get("linux_user") != grant.linux_user
+        ]
         entries.append(asdict(grant))
         self._write_atomic(entries)
 
