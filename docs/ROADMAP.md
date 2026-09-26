@@ -239,5 +239,19 @@ propia partición del disco, con Likay-OS ya instalado y corriendo —
 eso es trabajo de Etapa 2 (instalador real), no de Etapa 1. La
 interfaz genérica para montar cualquier agente (issue
 [#2](https://github.com/Kevindelb/Likay-OS/issues/2), Fase 2) se
-diseña junto con esa etapa, no antes. Ninguna etapa más allá de la 1
-está implementada.
+diseña junto con esa etapa, no antes.
+
+**Etapa 2, en progreso — la interfaz genérica (Agent Broker) ya está
+implementada y validada en hardware real** (ver
+[`docs/AGENT_INTERFACE.md`](AGENT_INTERFACE.md)): instalación de un
+agente de terceros que nunca se horneó en la imagen (transporte USB,
+manifiesto validado, sandbox systemd/Quadlet OCI generado por agente),
+y el fixture `malicious-agent` (7 intentos de escape, los 7 DENIED)
+corrido contra ese sandbox en una laptop real, no solo en QEMU. Lo que
+sigue abierto de Etapa 2, sin cerrar todavía: Secure Boot/TPM y LUKS
+(explícitamente pospuestos a esta etapa, ver más abajo, no
+implementados aún), y una auditoría de seguridad propia (2026-09-26,
+ver `docs/AUDITORIA-SEGURIDAD.md`/`docs/REAUDITORIA-SEGURIDAD.md`) que
+encontró y cerró varios hallazgos reales sobre el Broker/instalador —
+tratarla como el estado de referencia actual, no esta sección, para el
+detalle hallazgo por hallazgo.
