@@ -403,3 +403,44 @@ class TestParseManifestFile:
 
         with pytest.raises(ManifestError, match="symlink"):
             parse_manifest_file(link)
+
+
+class TestSandboxCapabilityCoherence:
+    """
+    Hallazgo I-3 (auditoría de seguridad 2026-09-26): la TUI le pide al
+    usuario aprobar `capabilities:` una por una, pero lo que gobierna el
+    sandbox real es `sandbox:` -- un manifiesto podía otorgar acceso de
+    red/dispositivos vía sandbox sin que la capability correspondiente
+    estuviera declarada (ni aprobada). VALID_KAL_IN_MANIFEST ya es
+    coherente (network.egress + host-egress, gpu.compute/audio.microphone
+    + devices: none) -- estos tests verifican el caso incoherente.
+    """
+
+    def test_rejects_host_egress_without_network_capability(self) -> None:
+        incoherent = VALID_KAL_IN_MANIFEST.replace("  - network.egress\n", "")
+        with pytest.raises(ManifestError, match="network.egress"):
+            parse_manifest_text(incoherent)
+
+    def test_accepts_network_none_without_network_capability(self) -> None:
+        """sandbox.network: none no otorga nada -- no debe exigir la capability."""
+        no_egress = VALID_KAL_IN_MANIFEST.replace("  - network.egress\n", "").replace(
+            "network: host-egress", "network: none"
+        )
+        parse_manifest_text(no_egress)  # no levanta
+
+    def test_rejects_device_allow_without_any_device_capability(self) -> None:
+        incoherent = VALID_KAL_IN_MANIFEST.replace(
+            "  devices: none\n",
+            '  devices: explicit\n  device_allow: ["/dev/dri/renderD128 rw"]\n',
+        ).replace(
+            "  - gpu.compute\n  - audio.microphone\n", ""
+        )
+        with pytest.raises(ManifestError, match="dispositivo"):
+            parse_manifest_text(incoherent)
+
+    def test_accepts_device_allow_with_a_matching_capability(self) -> None:
+        coherent = VALID_KAL_IN_MANIFEST.replace(
+            "  devices: none\n",
+            '  devices: explicit\n  device_allow: ["/dev/dri/renderD128 rw"]\n',
+        )
+        parse_manifest_text(coherent)  # gpu.compute ya está declarada -- no levanta

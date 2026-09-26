@@ -250,6 +250,35 @@ class TestQuadletUnitMapping:
         container_section = unit.split("[Container]")[1].split("[Service]")[0]
         assert "User=" not in container_section
 
+    def test_service_section_gets_the_safe_hardening_subset(self, helper) -> None:
+        """
+        Hallazgo I-7 (auditoría 2026-09-26): el [Service] del Quadlet OCI
+        no llevaba ninguna directiva de _SANDBOX_BASE_DIRECTIVES, a
+        diferencia del runtime Python. Ahora lleva el subconjunto que no
+        entra en conflicto con los requisitos ya conocidos de Podman
+        rootless (ver el comentario largo en _quadlet_unit_text) -- y
+        deliberadamente NO lleva las que sí entrarían en conflicto:
+        NoNewPrivileges=yes rompería newuidmap/newgidmap (setuid),
+        ProtectControlGroups=yes está en conflicto directo con
+        Delegate=yes, y SystemCallFilter=@system-service no está
+        confirmado que cubra los syscalls de namespaces que Podman usa.
+        """
+        manifest = _manifest(
+            {"filesystem": "none", "network": "none", "devices": "none"},
+            runtime=_DEFAULT_OCI_RUNTIME,
+        )
+        unit = helper._quadlet_unit_text(manifest, "agent-test-agent")
+        service_section = unit.split("[Service]")[1]
+
+        assert "LockPersonality=yes" in service_section
+        assert "RestrictSUIDSGID=yes" in service_section
+        assert "ProtectControlGroups=yes" not in service_section
+        assert "SystemCallFilter=" not in service_section
+        # [Container] ya tiene su propio "NoNewPrivileges=true" (para el
+        # proceso DENTRO del contenedor) -- el [Service] no debe agregar
+        # la variante systemd ("=yes") para el proceso de Podman mismo.
+        assert "NoNewPrivileges=yes" not in service_section
+
     def test_declared_secrets_become_secret_directives(self, helper) -> None:
         """
         Diseño de secrets injection (2026-09-20, ver docs/AGENT_INTERFACE.md

@@ -142,7 +142,63 @@ def parse_manifest_text(text: str) -> AgentManifest:
     except jsonschema.ValidationError as exc:
         raise ManifestError(f"Manifiesto no cumple el schema: {exc.message}") from exc
 
+    _validate_sandbox_capability_coherence(raw)
+
     return AgentManifest(raw=raw)
+
+
+# Capacidades cuya aprobación explícita el usuario ve en la TUI (ver
+# agent-install-launcher) implica acceso a dispositivos -- usadas para
+# la validación de coherencia de abajo. Del taxonomy completo (ver
+# docs/AGENT_INTERFACE.md), estas son las que corresponden a HARDWARE
+# concreto vía /dev (incluye disk.read/disk.write -- Agente #0, el
+# instalador, es el único caso real de sandbox.devices: explicit hoy, y
+# apunta a un nodo de disco, no a GPU/audio/cámara); partition.manage/
+# bootloader.install/docker.sandbox/llm.local/filesystem.* no son
+# "dispositivos" en este sentido.
+_DEVICE_RELATED_CAPABILITIES = frozenset({
+    "disk.read", "disk.write", "gpu.compute", "audio.microphone", "audio.speaker", "camera",
+})
+
+
+def _validate_sandbox_capability_coherence(raw: dict[str, Any]) -> None:
+    """
+    Hallazgo I-3 (auditoría de seguridad 2026-09-26): la TUI le pide al
+    usuario aprobar `capabilities:` una por una, pero lo que gobierna el
+    sandbox real es `sandbox:` -- un manifiesto podía declarar
+    `capabilities: []` (nada aprobado) y aun así `sandbox.network:
+    host-egress` (acceso normal a la red del host, sin aprobación
+    explícita de network.egress) o `sandbox.devices: explicit` con
+    `device_allow` apuntando a hardware real sin ninguna capability de
+    dispositivo declarada. El schema por sí solo no puede expresar esta
+    relación cruzada entre dos secciones -- se valida acá, en el mismo
+    punto por el que pasan TANTO la TUI (para mostrar) COMO el helper
+    (para instalar), así que ningún manifiesto incoherente llega a
+    generar una unidad real sin que el usuario haya aprobado la
+    capacidad que el sandbox realmente otorga.
+
+    Esto es datos, no ejecución (invariante 3): solo compara campos ya
+    parseados entre sí, nunca interpreta ni ejecuta nada del manifiesto.
+    """
+    capabilities = set(raw.get("capabilities", []))
+    sandbox = raw.get("sandbox", {}) or {}
+
+    if sandbox.get("network") == "host-egress" and "network.egress" not in capabilities:
+        raise ManifestError(
+            "sandbox.network: host-egress otorga acceso a la red del host, pero "
+            "capabilities no incluye network.egress -- el usuario nunca aprobaría "
+            "algo que ni siquiera ve declarado. Declará network.egress en "
+            "capabilities, o bajá sandbox.network a 'none'."
+        )
+
+    if sandbox.get("devices") == "explicit" and sandbox.get("device_allow"):
+        if not (capabilities & _DEVICE_RELATED_CAPABILITIES):
+            raise ManifestError(
+                "sandbox.devices: explicit con device_allow no vacío otorga acceso "
+                "a dispositivos del host, pero capabilities no declara ninguna "
+                f"capacidad de dispositivo ({', '.join(sorted(_DEVICE_RELATED_CAPABILITIES))}) "
+                "-- el usuario nunca aprobaría algo que ni siquiera ve declarado."
+            )
 
 
 def parse_manifest_file(path: Path) -> AgentManifest:

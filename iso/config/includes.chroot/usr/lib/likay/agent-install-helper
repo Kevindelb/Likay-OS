@@ -1012,7 +1012,37 @@ def _quadlet_unit_text(manifest: AgentManifest, linux_user: str) -> str:
     # motivo por el que _run(needs_userns=True) tiene que envolver
     # "podman load" en systemd-run en vez de un subprocess.run(user=...)
     # directo (ver ese comentario para el diagnóstico completo).
-    service_directives = ["Delegate=yes"]
+    # Hallazgo de la auditoría de seguridad (2026-09-26, I-7): el
+    # runtime Python recibe _SANDBOX_BASE_DIRECTIVES completo en su
+    # [Service]; el Quadlet OCI no recibía NINGUNO -- asimetría real de
+    # defensa en profundidad para el proceso que corre "podman" (no el
+    # contenedor en sí, que ya tiene su propio hardening vía
+    # NoNewPrivileges=true/DropCapability=ALL/ReadOnly=true arriba).
+    #
+    # No se copia _SANDBOX_BASE_DIRECTIVES completo: varias de esas
+    # directivas son directamente incompatibles con cómo Podman rootless
+    # necesita correr ACÁ, y ya costó una fase entera (Fase C, hallazgo
+    # de Delegate=yes) descubrir los requisitos reales -- aplicarlas a
+    # ciegas sin poder re-probar en QEMU/hardware ahora mismo arriesga
+    # romper ese camino en silencio, que es peor que dejar un hallazgo
+    # de severidad Baja sin cerrar del todo:
+    #   - NoNewPrivileges=yes: newuidmap/newgidmap (que Podman rootless
+    #     invoca para escribir el mapeo subuid/subgid) son binarios
+    #     setuid -- este flag les impediría escalar, rompiendo la
+    #     creación del user namespace.
+    #   - ProtectControlGroups=yes: pone /sys/fs/cgroup read-only para
+    #     la unidad, en conflicto directo con Delegate=yes (que le da a
+    #     esta unidad control real de su propio subárbol de cgroup --
+    #     el propio systemd.exec(5) documenta esta combinación como
+    #     contradictoria).
+    #   - SystemCallFilter=@system-service: no está confirmado que el
+    #     grupo cubra unshare/clone3/setns con flags de namespace tal
+    #     como Podman rootless los usa.
+    # Sí se aplican las que no tocan ninguno de esos mecanismos:
+    # LockPersonality (no interactúa con namespaces/cgroups/setuid) y
+    # RestrictSUIDSGID (bloquea CREAR archivos setuid/setgid nuevos, no
+    # ejecutar binarios que ya lo son como newuidmap).
+    service_directives = ["Delegate=yes", "LockPersonality=yes", "RestrictSUIDSGID=yes"]
     if "memory_max" in sandbox:
         service_directives.append(f"MemoryMax={sandbox['memory_max']}")
     if "cpu_quota" in sandbox:

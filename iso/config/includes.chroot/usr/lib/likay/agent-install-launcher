@@ -126,6 +126,31 @@ def confirm(stdscr, title: str, lines: list[str]) -> bool:
             return False
 
 
+def _format_sandbox_lines(sandbox: dict) -> list[str]:
+    """
+    Hallazgo I-3 (auditoría de seguridad 2026-09-26): esta TUI aprobaba
+    capacidades una por una, pero nunca mostraba el `sandbox:` real del
+    manifiesto -- un agente podía declarar `capabilities: []` (nada
+    aprobado) y aun así `sandbox.network: host-egress` (acceso a la red
+    del host) o dispositivos concretos vía `device_allow`, sin que el
+    usuario viera esa concesión en ningún lado antes de instalar. El
+    helper ya valida coherencia entre sandbox/capabilities (ver
+    likay_broker.manifest._validate_sandbox_capability_coherence) -- esto
+    es la mitad de transparencia que faltaba del lado de la TUI.
+    """
+    lines = [
+        f"filesystem: {sandbox.get('filesystem', 'none')}",
+        f"network:    {sandbox.get('network', 'none')}",
+        f"devices:    {sandbox.get('devices', 'none')}",
+    ]
+    for entry in sandbox.get("device_allow", []):
+        lines.append(f"  device_allow: {entry}")
+    for key in ("memory_max", "cpu_quota", "tasks_max"):
+        if key in sandbox:
+            lines.append(f"{key}: {sandbox[key]}")
+    return lines
+
+
 def approve_capabilities(stdscr, agent_id: str, capabilities: list[str]) -> list[str]:
     """
     Aprobación explícita, una por una -- ver docs/AGENT_INTERFACE.md
@@ -291,6 +316,7 @@ def main(stdscr) -> int:
         short_id = manifest["short_id"]
         capabilities = manifest["capabilities"]
         runtime = manifest.get("runtime") or {}
+        sandbox = manifest.get("sandbox") or {}
         secrets_declared = manifest.get("secrets") or []
 
         if not confirm(
@@ -299,6 +325,15 @@ def main(stdscr) -> int:
              f"puerto:    {runtime.get('port', '(no es un servicio)')}",
              f"capacidades pedidas: {len(capabilities)}",
              "", "¿Continuar con la instalación?"],
+        ):
+            return 1
+
+        # Hallazgo I-3 (auditoría 2026-09-26): mostrar el sandbox real,
+        # no solo la cantidad de capacidades -- ver _format_sandbox_lines.
+        if not confirm(
+            stdscr, f"Sandbox real que va a correr -- {agent_id}",
+            [*_format_sandbox_lines(sandbox), "", "Esto es lo que el sistema va a otorgar de verdad.",
+             "¿Continuar?"],
         ):
             return 1
 
