@@ -388,6 +388,46 @@ tocada por quien construyó el Broker) — `systemctl status` mostró el
 proceso real del contenedor corriendo dentro del cgroup de la unidad, y
 `curl http://127.0.0.1:8000/` devolvió `200 OK`.
 
+**El runtime OCI que corre hoy es siempre `runc` (el default de
+Podman) — no existe ningún campo que elija otro.** Spike real contra
+QEMU/hardware (2026-10-03, ver `docs/ROADMAP.md`, sección del techo de
+aislamiento) confirmó que gVisor (`runsc`) **sí** funciona bajo el
+mismo mecanismo rootless + `Delegate=yes` del que ya depende este
+Adapter — pero con dos requisitos no obvios, y deliberadamente **sin
+wiring a `_quadlet_unit_text()` todavía**:
+
+1. `--runtime-flag=ignore-cgroups` es obligatorio — sin esto, `runsc`
+   falla con `cannot set up cgroup for root: ... permission denied`
+   incluso con la delegación de cgroup que `Delegate=yes` ya provee.
+   `runsc` no maneja la delegación rootless de cgroups de la misma
+   forma que `runc`; esto no es un problema de empaquetado, es una
+   diferencia de diseño a asumir como parte de cualquier integración.
+2. El binario suelto `runsc` (el que sugiere el quickstart de
+   gvisor.dev) **no alcanza** — el release actual separó el sentry en
+   un binario sidecar aparte (`gvisor_sentry`); sin él, `runsc` cae a
+   una ruta de compatibilidad (`sidecar-usage-policy=
+   LEGACY_DEPRECATED_SLOW_EMBEDDED_FALLBACK`) que gVisor mismo marca
+   como por vencer. El layout correcto es el bundle completo del
+   release (`gvisor-x86_64.tar.zstd`), con `gvisor-bin/` como
+   directorio hermano de `runsc` en el mismo `$PATH`.
+
+Por qué esto NO se traduce todavía en un campo `sandbox.oci_runtime:
+runc | runsc`: la única forma de pasarle `--runtime=`/`--runtime-flag=`
+a `podman run` vía Quadlet es `GlobalArgs=` — la misma clase de escape
+hatch de texto libre que la invariante 7 ya evita para `PodmanArgs=`.
+Un enum validado que solo elige entre dos presets fijos y hardcodeados
+en el helper (nunca texto del manifiesto interpolado directo) sería
+aceptable en principio, pero este spike validó el mecanismo subyacente
+con un `systemd-run` manual, no la integración real con
+`_quadlet_unit_text()`/el generador de Quadlet — falta confirmar que
+una unidad generada de verdad (no un wrapper a mano) honra
+`GlobalArgs=--runtime=...` igual, y falta medir el overhead de `runsc`
+contra una carga de trabajo real de agente (este spike solo corrió
+`echo` dentro del fixture). Añadir una selección de sandbox sin esa
+validación y esos datos sería peor que no tener la opción: arriesgaría
+un downgrade de aislamiento silencioso o una regresión de desempeño sin
+poder explicarla.
+
 ## 4. Artifact — transporte y procedencia
 
 Nuevo en v2, separado a propósito de `runtime` (sección 3). `runtime`
@@ -1012,6 +1052,11 @@ sandbox:
   `artifact.transport` solo acepta medios locales verificados en v2
   (sección 4). El formato se versiona (`schema_version`) para poder
   sumar transportes autenticados más adelante sin romper v2.
+- `sandbox.oci_runtime` (elegir `runsc`/gVisor en vez del `runc` por
+  defecto) — mecanismo subyacente verificado contra QEMU/hardware real
+  (sección 3.2), pero sin wiring a `_quadlet_unit_text()` hasta validar
+  la integración real con Quadlet (no un `systemd-run` manual) y medir
+  el overhead contra una carga de trabajo real de agente.
 - `update`/`rollback` de un agente ya instalado (sección 8).
 - Firma criptográfica de bundles/imágenes más allá del digest OCI ya
   obligatorio (sección 3.2).

@@ -115,14 +115,28 @@ multiagentes/red de usuarios, no después — revisar esta decisión tiene
 que ser parte explícita de diseñar esas dos capacidades, no algo para
 notar recién cuando ya estén construidas.
 
-**Camino conocido para subir el techo, si hace falta más adelante:**
-`gVisor` (`runsc`) es un runtime OCI más — compatible con Podman/Quadlet
-sin rediseñar la arquitectura del Sandbox Adapter (Fase C), sube el
-aislamiento del runtime OCI reinterpretando las syscalls en userspace
-en vez de dejarlas llegar al kernel real. Firecracker/microVM real
-(kernel invitado propio por agente, vía algo como Kata Containers) es
-un salto mucho más grande — reemplaza el storage taxonomy actual
-(bind mounts → virtio-fs/virtio-blk) y la identidad del Broker
+**Camino conocido para subir el techo, si hace falta más adelante —
+`gVisor` (`runsc`), verificado contra QEMU/hardware real (2026-10-03),
+no solo supuesto desde la documentación.** Es un runtime OCI más,
+compatible con el mismo mecanismo rootless + `Delegate=yes` del que ya
+depende el Sandbox Adapter (Fase C, `docs/AGENT_INTERFACE.md` sección
+3.2) — sube el aislamiento reinterpretando syscalls en userspace en vez
+de dejarlas llegar al kernel real, sin rediseñar esa arquitectura. El
+spike encontró dos requisitos reales, ninguno documentado con claridad
+por gVisor mismo: `--runtime-flag=ignore-cgroups` (sin él, falla por
+permisos incluso con la delegación de cgroup ya en regla) y el bundle
+completo del release (`gvisor-x86_64.tar.zstd`, con `gvisor-bin/` como
+hermano de `runsc`) — el binario `runsc` suelto que sugiere el
+quickstart oficial cae a una ruta de compatibilidad que gVisor mismo
+marca como por vencer. Deliberadamente **no** wireado todavía a un
+campo `sandbox.oci_runtime` real (ver `docs/AGENT_INTERFACE.md`,
+secciones 3.2 y 13): falta validar que una unidad Quadlet generada de
+verdad honra `GlobalArgs=--runtime=...` igual que el `systemd-run`
+manual de este spike, y falta medir el overhead contra una carga de
+trabajo real de agente (el spike solo corrió `echo`). Firecracker/microVM
+real (kernel invitado propio por agente, vía algo como Kata Containers)
+sigue siendo un salto mucho más grande — reemplaza el storage taxonomy
+actual (bind mounts → virtio-fs/virtio-blk) y la identidad del Broker
 (`SO_PEERCRED` sobre un socket Unix no cruza una frontera de VM, haría
 falta `virtio-vsock` con un mecanismo de identidad propio) — sería una
 etapa de roadmap en sí misma, no una extensión de Etapa 2/3.
