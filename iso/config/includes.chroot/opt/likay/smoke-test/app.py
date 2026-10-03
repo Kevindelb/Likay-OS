@@ -20,6 +20,10 @@ from pathlib import Path
 
 STATIC_DIR = Path(__file__).parent
 OLLAMA_HOST = "http://127.0.0.1:11434"
+# Tope del cuerpo aceptado en POST /api/chat -- ver do_POST (auditoría
+# de seguridad 2026-09-26). Un mensaje de chat real nunca se acerca a
+# este tamaño.
+_MAX_BODY_BYTES = 64 * 1024
 MODEL_TAG = Path("/etc/likay-os/model.conf").read_text().split('"')[1] if Path(
     "/etc/likay-os/model.conf"
 ).exists() else "desconocido"
@@ -85,7 +89,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        length = int(self.headers.get("Content-Length", 0))
+        # Auditoría de seguridad 2026-09-26: int(...) fuera del try y
+        # self.rfile.read(length) sin tope -- un Content-Length no
+        # numérico tumbaba el handler y uno enorme (o negativo) hacía que
+        # el proceso reservara memoria sin límite. Escucha solo en
+        # loopback y es una página descartable, pero el tope es gratis.
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
+        length = max(0, min(length, _MAX_BODY_BYTES))
+
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
             message = (payload.get("message") or "").strip()

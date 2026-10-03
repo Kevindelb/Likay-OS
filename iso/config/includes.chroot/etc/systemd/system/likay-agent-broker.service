@@ -46,5 +46,16 @@ LockPersonality=yes
 # escribir su propia política y su propio log de auditoría.
 ReadWritePaths=/var/lib/likay-agent-broker /var/log/likay-agent-broker
 
+# Hallazgos de la auditoría de seguridad (2026-09-26):
+# - Sin UMask propio, audit.log se creaba 0644 (umask 0022 de systemd) y
+#   quedaba legible por cualquier usuario local, incluido un agente.
+# - Sin TasksMax/MemoryMax, el Broker no tenía ningún techo de recursos:
+#   una conexión por hilo sin límite dejaba que cualquier usuario local
+#   (el socket es 0666 a propósito) agotara memoria/PIDs del sistema,
+#   porque los hilos nacen en el cgroup del Broker, no en el del agente.
+UMask=0027
+TasksMax=256
+MemoryMax=512M
+
 [Install]
 WantedBy=multi-user.target

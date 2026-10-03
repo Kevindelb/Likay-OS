@@ -61,20 +61,26 @@ real: instalación de un agente externo sin hornear de fábrica, y la
 prueba de los siete intentos de escape de arriba. Ver
 [`docs/AGENT_INTERFACE.md`](docs/AGENT_INTERFACE.md).
 
-Sin rodeos: es un proyecto joven, en desarrollo activo — pero
-cada afirmación de este README tiene hardware real detrás, no solo una
-demo optimista.
+Sin rodeos: es un proyecto joven, en desarrollo activo — pero lo de
+arriba tiene hardware real detrás, documentado con fecha y verificable
+en `docs/`, no solo una demo optimista. Cuando algo cambia de estado
+(un hallazgo nuevo, una regresión, un fix), se documenta ahí mismo con
+fecha — la fuente de verdad es esa documentación fechada, no este
+resumen.
 
 ### Por qué existe
 
 Este proyecto parte de kal, que **no es un agente de IA — es un kernel
 agéntico**: la infraestructura de seguridad (permisos explícitos de
 filesystem/red, sandboxing con Docker, auditoría verificable,
-protección activa contra presión de RAM) sobre la que hoy corre un
-agente de referencia, que orquesta modelos de IA (locales vía Ollama, o
-en la nube) para resolver tareas. Corre hoy como una aplicación sobre
-Windows/Linux. Likay-OS lleva esa misma base de seguridad un paso más
-allá: en vez de ser una app que abres, es el sistema que arranca
+protección activa contra presión de RAM) que kal ya construyó y probó,
+sobre el mismo diseño que valida kal-in, el agente de referencia (hoy
+un repo separado — kal-in todavía no importa a `kal` como dependencia
+directa, deuda técnica reconocida, ver `docs/ROADMAP.md`), que orquesta
+modelos de IA (locales vía Ollama, o en la nube) para resolver tareas.
+Corre hoy como una aplicación sobre Windows/Linux. Likay-OS lleva esa
+misma base de seguridad un paso más allá: en vez de ser una app que
+abres, es el sistema que arranca
 directo y ya está listo para trabajar.
 
 La visión de esta etapa es que Likay-OS pueda administrar, además de
@@ -94,6 +100,11 @@ ahí pasa primero por sacarle todo el jugo a Linux — ver
 - [`docs/AGENT_INTERFACE.md`](docs/AGENT_INTERFACE.md) — el contrato
   entre Likay-OS y cualquier agente que se monte sobre un sistema ya
   instalado (Etapa 2).
+- [`docs/AUDITORIA-SEGURIDAD.md`](docs/AUDITORIA-SEGURIDAD.md) /
+  [`docs/REAUDITORIA-SEGURIDAD.md`](docs/REAUDITORIA-SEGURIDAD.md) —
+  auditorías de seguridad externas del código de primera parte
+  (Broker/instalador/build), con estado de remediación de cada
+  hallazgo.
 - [`iso/README.md`](iso/README.md) — cómo buildear y probar la ISO
   live-boot de Etapa 1.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — cómo contribuir.
@@ -190,18 +201,25 @@ the seven-escape-attempt test above. See
 [`docs/AGENT_INTERFACE.md`](docs/AGENT_INTERFACE.md).
 
 Straight up: this is a young project, under active development — but
-every claim in this README has real hardware behind it, not just an
-optimistic demo.
+the above has real hardware behind it, documented with dates and
+verifiable in `docs/`, not just an optimistic demo. When something's
+status changes (a new finding, a regression, a fix), it's documented
+right there with a date — that dated documentation is the source of
+truth, not this summary.
 
 ### Why it exists
 
 This project builds on kal, which is **not an AI agent — it's an
 agentic kernel**: the security infrastructure (explicit filesystem/
 network permissions, Docker sandboxing, verifiable auditing, active
-protection against RAM pressure) that a reference agent runs on top of
-today, orchestrating AI models (local via Ollama, or cloud) to get
-work done. It runs today as an application on top of Windows/Linux.
-Likay-OS takes that same security foundation one step further:
+protection against RAM pressure) that kal already built and proved,
+under the same design that kal-in, the reference agent, validates
+(today a separate repo — kal-in doesn't import `kal` as a direct
+dependency yet, acknowledged technical debt, see
+`docs/ROADMAP.md`), orchestrating AI models (local via Ollama, or
+cloud) to get work done. It runs today as an application on top of
+Windows/Linux. Likay-OS takes that same security foundation one step
+further:
 instead of being an app you open, it's the system that boots directly
 and is already ready to work.
 
@@ -222,6 +240,11 @@ there starts with squeezing everything out of Linux first — see
 - [`docs/AGENT_INTERFACE.md`](docs/AGENT_INTERFACE.md) — the contract
   between Likay-OS and any agent mounted onto an already-installed
   system (Stage 2).
+- [`docs/AUDITORIA-SEGURIDAD.md`](docs/AUDITORIA-SEGURIDAD.md) /
+  [`docs/REAUDITORIA-SEGURIDAD.md`](docs/REAUDITORIA-SEGURIDAD.md) —
+  external security audits of the first-party code
+  (Broker/installer/build), with the remediation status of each
+  finding.
 - [`iso/README.md`](iso/README.md) — how to build and test the Stage 1
   live-boot ISO.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute.

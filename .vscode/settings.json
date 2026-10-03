@@ -1,0 +1,16 @@
+{
+    "search.exclude": {
+        "iso/chroot/**": true,
+        "iso/binary/**": true,
+        "iso/binary.contents/**": true,
+        "iso/cache/**": true,
+        "iso/local/**": true
+    },
+    "files.watcherExclude": {
+        "iso/chroot/**": true,
+        "iso/binary/**": true,
+        "iso/binary.contents/**": true,
+        "iso/cache/**": true,
+        "iso/local/**": true
+    }
+}

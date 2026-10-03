@@ -58,6 +58,23 @@ Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
 # kiosco solo muestra nuestro propio localhost:8000, no navegación
 # libre de sitios no confiables.
 Environment=WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-M1): con el
+# sandbox interno de WebKit desactivado (arriba), un RCE del
+# renderizador corre directo como el usuario "kiosk", sin bubblewrap de
+# por medio -- estas directivas son defensa en profundidad del lado de
+# systemd, compensando esa ausencia. No se agrega ProtectHome=yes ni
+# PrivateDevices=yes/DeviceAllow= acá: kiosk vive en /home/kiosk (lo
+# primero lo rompería) y necesita /dev/dri+/dev/input reales vía las
+# tags udev "uaccess" que le da PAMName=login (lo segundo también lo
+# rompería) -- ninguna de las dos se puede endurecer sin poder
+# reprobar en QEMU/hardware real, así que quedan afuera por ahora en
+# vez de arriesgar romper el arranque del kiosco a ciegas.
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
 # Las cuatro variables de acá abajo (GDK_BACKEND, NO_AT_BRIDGE,
 # GTK_USE_PORTAL, WEBKIT_DISABLE_DMABUF_RENDERER) se agregaron mientras
 # se investigaba un crash de cage en xwayland/xwm.c:592 — la causa real

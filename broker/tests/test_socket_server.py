@@ -19,8 +19,6 @@ import threading
 import time
 from pathlib import Path
 
-import pytest
-
 from likay_broker import protocol
 from likay_broker.audit import AuditLog
 from likay_broker.policy_store import AgentGrant, PolicyStore
@@ -373,6 +371,62 @@ class TestConnectionHardening:
         # idle_timeout, sin que el cliente haga nada.
         assert client.recv(4096) == b""
         client.close()
+
+    def test_connections_beyond_max_connections_are_closed_immediately(self, tmp_path: Path) -> None:
+        """
+        Auditoría de seguridad 2026-09-26: sin tope, cada conexión
+        aceptada arrancaba un hilo nuevo -- cualquier usuario local (el
+        socket es 0666 a propósito) podía agotar memoria/PIDs del Broker,
+        que no tiene límites de cgroup.
+        """
+        server = BrokerServer(
+            socket_path=tmp_path / "broker.sock",
+            policy_store=PolicyStore(path=tmp_path / "policy.json"),
+            audit_log=AuditLog(path=tmp_path / "audit.log"),
+            max_connections=1,
+            idle_timeout=5.0,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        _wait_for_socket(server._socket_path)
+
+        def _request(sock: socket.socket, req_id: int) -> bytes:
+            sock.sendall(
+                (json.dumps({"jsonrpc": "2.0", "id": req_id, "method": "check_capability",
+                             "params": {"capability": "x"}}) + "\n").encode()
+            )
+            return sock.recv(4096)
+
+        first = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        first.connect(str(server._socket_path))
+        first.settimeout(2.0)
+        assert _request(first, 1)  # ocupa el único cupo disponible
+
+        second = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        second.connect(str(server._socket_path))
+        second.settimeout(2.0)
+        # Sin cupo: el servidor la cierra al aceptarla, no encola otro hilo.
+        assert second.recv(4096) == b""
+        second.close()
+
+        # Al cerrar la primera se libera el cupo y el servidor vuelve a atender.
+        first.close()
+        deadline = time.monotonic() + 3.0
+        accepted_again = False
+        while time.monotonic() < deadline:
+            third = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            third.connect(str(server._socket_path))
+            third.settimeout(1.0)
+            try:
+                if _request(third, 3):
+                    accepted_again = True
+                    third.close()
+                    break
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                pass
+            third.close()
+            time.sleep(0.05)
+        assert accepted_again
 
 
 def _current_username() -> str:

@@ -98,3 +98,44 @@ def test_write_is_atomic_no_tmp_file_left_behind(tmp_path: Path) -> None:
     leftovers = list(tmp_path.glob(".policy-*"))
     assert leftovers == []
     assert (tmp_path / "policy.json").exists()
+
+
+def test_upsert_evicts_any_prior_grant_sharing_linux_user(tmp_path: Path) -> None:
+    """
+    Defensa en profundidad de I-2 (auditoría 2026-09-26): con el fix de
+    short_id (manifest.py) dos agent_id distintos ya no deberían derivar
+    el mismo linux_user, pero get_grant() busca por linux_user y devuelve
+    la PRIMERA coincidencia -- si por cualquier motivo llegaran a
+    coexistir dos grants para el mismo usuario (policy.json editado a
+    mano, un bug futuro), upsert_grant debe garantizar que nunca haya más
+    de uno, en vez de dejar una entrada vieja/ambigua dando vueltas.
+    """
+    store = PolicyStore(path=tmp_path / "policy.json")
+    store.upsert_grant(_grant(agent_id="com.likay.kal-in", linux_user="agent-shared"))
+    store.upsert_grant(_grant(agent_id="com.evil.other", linux_user="agent-shared"))
+
+    all_grants = store.load_all()
+    assert len(all_grants) == 1
+    assert all_grants[0].agent_id == "com.evil.other"
+
+
+def test_load_all_tolerates_unknown_keys_in_an_entry(tmp_path: Path) -> None:
+    """
+    Hallazgo V-1 (auditoría 2026-09-26): antes de este fix,
+    AgentGrant(**entry) reventaba con TypeError ante cualquier clave
+    extra en una entrada de policy.json -- tumbando TODAS las consultas
+    del Broker (check_capability de cualquier agente), no solo la
+    entrada con la clave de más. load_all debe ignorar claves
+    desconocidas en vez de fallar.
+    """
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        '[{"agent_id": "com.likay.kal-in", "linux_user": "agent-kal-in", '
+        '"capabilities": ["llm.local"], "installed_at": "2026-09-15T12:00:00Z", '
+        '"future_field_this_code_does_not_know_about": "x"}]'
+    )
+    store = PolicyStore(path=policy_path)
+
+    grants = store.load_all()
+    assert len(grants) == 1
+    assert grants[0].agent_id == "com.likay.kal-in"

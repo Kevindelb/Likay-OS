@@ -186,3 +186,51 @@ def test_tail_returns_recent_entries_most_recent_first(log):
 def test_tail_on_missing_file_returns_empty_list(tmp_path):
     log = AuditLog(path=tmp_path / "does-not-exist.log")
     assert log.tail() == []
+
+
+def test_log_file_is_not_world_readable(log):
+    """
+    Auditoría de seguridad 2026-09-26: sin chmod explícito, audit.log se
+    creaba con el umask por defecto de systemd (0022) y quedaba 0644 --
+    legible por cualquier usuario local, incluido un agente instalado.
+    """
+    import os
+    import stat
+
+    _record(log)
+
+    mode = stat.S_IMODE(os.stat(log.path).st_mode)
+    assert mode == 0o640, f"esperado 0640, obtenido {oct(mode)}"
+
+
+def test_module_cli_verify_audit_returns_zero_on_intact_chain(log, monkeypatch):
+    """
+    El subcomando `verify-audit` es el caller que faltaba de
+    verify_chain()/diagnose_chain() (auditoría 2026-09-26): ningún
+    componente del sistema instalado las invocaba.
+    """
+    from likay_broker import __main__ as broker_main
+
+    _record(log)
+    monkeypatch.setattr(broker_main, "AuditLog", lambda: log)
+
+    assert broker_main.main(["verify-audit"]) == 0
+
+
+def test_module_cli_verify_audit_returns_nonzero_on_broken_chain(log, monkeypatch, capsys):
+    from likay_broker import __main__ as broker_main
+
+    _record(log, method="uno")
+    _record(log, method="dos")
+    # manipulación: se reescribe el contenido de la primera entrada sin
+    # recalcular la cadena (mismo escenario que test_tampering_with_content_is_detected)
+    lines = log.path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    first["decision"] = "ALLOW" if first["decision"] != "ALLOW" else "DENY"
+    lines[0] = json.dumps(first, sort_keys=True)
+    log.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(broker_main, "AuditLog", lambda: log)
+
+    assert broker_main.main(["verify-audit"]) == 1
+    assert "rota" in capsys.readouterr().out

@@ -17,8 +17,15 @@ jobs:
       run:
         working-directory: broker
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Hallazgo V-1 (auditoría de seguridad 2026-09-26): las actions
+      # estaban pineadas por tag mutable (@v4/@v5) -- un tag puede
+      # moverse (a otro release, o por un compromiso de la cuenta que lo
+      # publica) sin que este workflow lo note. Pineadas acá por SHA
+      # completo (comentario indica el release humano-legible al momento
+      # de pinear) -- actualizar el SHA a mano, deliberadamente, cuando
+      # se quiera subir de versión.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"

@@ -14,8 +14,30 @@ if ! id likay-broker >/dev/null 2>&1; then
 fi
 
 python3 -m venv /opt/likay-broker/.venv
-/opt/likay-broker/.venv/bin/pip install --no-cache-dir --upgrade pip
-/opt/likay-broker/.venv/bin/pip install --no-cache-dir -e /opt/likay-broker
+# Sin "pip install --upgrade pip" (hallazgo R-5, re-auditoría
+# 2026-09-26) -- mismo motivo que 0300/0320: el pip que trae
+# python3-venv ya alcanza, y reemplazarlo por uno de PyPI sin hash
+# anulaba en la práctica el --require-hashes de abajo.
+# Hallazgo de la auditoría de seguridad (2026-09-26, B-A2): antes de
+# este fix, "pip install -e ." resolvía pyyaml/jsonschema (y sus
+# transitivas) sin hashes ni versiones fijas -- una release maliciosa
+# de cualquiera de esas dependencias, publicada entre un build y el
+# siguiente, quedaba horneada e importada en runtime sin que nada lo
+# notara. requirements-broker.lock.txt (generado con
+# "uv pip compile broker/pyproject.toml --generate-hashes") fija
+# versión Y hash de cada dependencia de terceros -- --require-hashes
+# rechaza instalar cualquier paquete que no matchee exactamente.
+#
+# --require-hashes es incompatible con "-e" (un install editable no
+# tiene un hash posible, es una ruta local) -- por eso las
+# dependencias de terceros y el propio paquete se instalan en dos
+# pasos separados: primero las hasheadas, después likay-broker mismo
+# (código de este repo, ya confiable por estar en el árbol de fuentes
+# que se audita/revisa -- el hash-pinning importa para la cadena de
+# suministro DE TERCEROS, no para el propio código).
+/opt/likay-broker/.venv/bin/pip install --no-cache-dir --require-hashes \
+    -r /opt/likay-broker/requirements-broker.lock.txt
+/opt/likay-broker/.venv/bin/pip install --no-cache-dir --no-deps /opt/likay-broker
 
 # policy.json y audit.log viven fuera de /opt/likay-broker a propósito
 # (/var/lib, /var/log -- convención estándar de estado runtime vs.
@@ -26,7 +48,24 @@ python3 -m venv /opt/likay-broker/.venv
 # exist_ok=True)), esto es solo para que el dueño sea correcto desde
 # el vamos.
 mkdir -p /var/lib/likay-agent-broker /var/log/likay-agent-broker
-chown -R likay-broker:likay-broker /opt/likay-broker /opt/likay-broker-home \
+# Hallazgo de la auditoría de seguridad (2026-09-26): antes este chown -R
+# incluía /opt/likay-broker, o sea que el usuario SIN privilegios
+# likay-broker quedaba dueño de su propio código Y de su intérprete
+# (/opt/likay-broker/.venv/bin/python3). Ese árbol lo ejecuta el helper
+# de instalación COMO ROOT (su shebang apunta al venv del Broker) y
+# también la TUI como likay-agent-install, que tiene pkexec sin
+# contraseña: cualquier escritura lograda como likay-broker se convertía
+# en ejecución como root. Nada ejecutado por root debe ser escribible por
+# un usuario sin privilegios.
+#
+# El Broker solo necesita escribir estado runtime y log (ver
+# ReadWritePaths= en likay-agent-broker.service); el código y el venv
+# quedan root:root. `chown -R root:root` es necesario (no solo dejarlo
+# como está) porque chroot/ se conserva entre builds y una corrida
+# anterior pudo haberlos dejado con el dueño viejo.
+chown -R root:root /opt/likay-broker
+chmod -R go-w /opt/likay-broker
+chown -R likay-broker:likay-broker /opt/likay-broker-home \
     /var/lib/likay-agent-broker /var/log/likay-agent-broker
 
 # Bug real encontrado probando esto en QEMU (2026-09-15): faltaba este
@@ -37,3 +76,8 @@ chown -R likay-broker:likay-broker /opt/likay-broker /opt/likay-broker-home \
 # `likay_agent_install.service`/register_policy hubieran fallado en
 # silencio al no encontrar el socket.
 systemctl enable likay-agent-broker.service
+
+# Auditoría 2026-09-26: el timer que verifica la cadena de auditoría
+# (ver likay-agent-broker-verify.timer). Mismo motivo que el enable de
+# arriba -- includes.chroot no habilita nada solo.
+systemctl enable likay-agent-broker-verify.timer
