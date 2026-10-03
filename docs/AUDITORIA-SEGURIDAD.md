@@ -11,9 +11,21 @@
 > B-B2, B-B4, B-B7 (riesgo real bajo o no corregible vía código sin
 > volver a probar en QEMU/hardware). Parte B (K-1 a K-11) es el
 > kernel vendorizado `kal`/`kal-in` — se resuelve en esos repos, no en
-> este. Este documento queda tal cual se recibió, como registro del
-> estado ANTES de la remediación — no se edita retroactivamente el
-> cuerpo del informe.
+> este.
+>
+> **Actualización 2026-10-03:** los submódulos `vendor/kal`/`vendor/kal-in`
+> estaban pineados en commits de 2026-09-19 — anteriores a toda esta
+> ronda de auditoría, así que ninguno de los fixes de Parte B llegaba
+> acá por más que se hubieran mergeado upstream. Bumpeados a
+> `origin/main` (commit `bfb51d3`); confirmado con grep contra el
+> código real, no solo de palabra, que K-1 (el hallazgo Crítica de
+> Parte B) y varios otros ya están resueltos upstream. Parte B queda
+> efectivamente cerrada para este repo por la vía correcta — actualizar
+> la dependencia — no reimplementando nada acá.
+>
+> Este documento queda tal cual se recibió, como registro del estado
+> ANTES de la remediación — no se edita retroactivamente el cuerpo del
+> informe.
 
 **Fecha:** 2026-09-26
 **Alcance:** repositorio completo. Código de primera parte (Broker,

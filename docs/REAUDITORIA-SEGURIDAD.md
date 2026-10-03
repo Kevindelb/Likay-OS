@@ -6,9 +6,18 @@
 > rama `audit/fixes-2026-09-26`, commit `96a5d0f` y los que le
 > preceden). R-1 (Alta) era el más serio: `op_generate_unit()` nunca
 > conectaba la aprobación/denegación real del usuario con el sandbox
-> generado -- denegar una capacidad era cosmético. R-2 (K-1…K-6, kernel
-> vendorizado) sigue sin tocar a propósito: es `kal`/`kal-in`, no este
-> repo. R-7/R-8 quedan como verificación pendiente en QEMU/hardware
+> generado -- denegar una capacidad era cosmético.
+>
+> **R-2 (K-1…K-6, kernel vendorizado) actualizado 2026-10-03: resuelto
+> vía bump de submódulo, no reimplementado acá.** Los pines de
+> `vendor/kal`/`vendor/kal-in` eran de 2026-09-19 -- más viejos que toda
+> la auditoría, así que los fixes reales que `kal`/`kal-in` ya habían
+> mergeado upstream nunca llegaban a este repo. Bumpeados a
+> `origin/main` (commit `bfb51d3`); K-1 confirmado resuelto con grep
+> directo contra el código real (defensa en dos capas, citando
+> explícitamente esta auditoría).
+>
+> R-7/R-8 quedan como verificación pendiente en QEMU/hardware
 > real (no como bugs confirmados) -- ver los commits para el detalle
 > de por qué. R-9 (residuos menores: `source` de model.conf, CI sin
 > hashes, `PolicyStore.get_grant` ante una clave faltante, fairness de
